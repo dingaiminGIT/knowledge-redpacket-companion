@@ -1,0 +1,14 @@
+.DS_Store
+.gradle/
+.idea/
+*.iml
+**/build/
+local.properties
+*.apk
+*.aab
+
+# Local reverse-engineering and device-test artifacts.
+/androguard.db
+/*.png
+/*.mp4
+/*.xml
