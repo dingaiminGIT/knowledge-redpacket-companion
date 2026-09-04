@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">知识红包伴侣</string>
+    <string name="accessibility_description">读取得到知识红包列表中的有效权益，并在已核对标题的课程详情页启动连续播放。</string>
+</resources>
