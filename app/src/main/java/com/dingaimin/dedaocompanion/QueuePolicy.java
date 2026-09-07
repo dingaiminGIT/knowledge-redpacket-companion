@@ -3,7 +3,11 @@ package com.dingaimin.dedaocompanion;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 final class QueuePolicy {
     static List<RedPacketItem> apply(List<RedPacketItem> source, String course,
@@ -19,6 +23,44 @@ final class QueuePolicy {
         Comparator<RedPacketItem> order = Comparator.comparingLong(item -> item.claimedAtSeconds);
         if (newestFirst) order = order.reversed();
         Collections.sort(result, order);
+        return result;
+    }
+
+    static List<RedPacketItem> applyCustomOrder(List<RedPacketItem> source,
+                                                 List<String> orderedKeys) {
+        ArrayList<RedPacketItem> result = new ArrayList<>();
+        if (source == null) return result;
+        result.addAll(source);
+        if (orderedKeys == null || orderedKeys.isEmpty()) return result;
+
+        Map<String, Integer> ranks = new HashMap<>();
+        for (int i = 0; i < orderedKeys.size(); i++) {
+            String key = orderedKeys.get(i);
+            if (key != null && !key.isBlank()) ranks.putIfAbsent(key, i);
+        }
+        result.sort(Comparator.comparingInt(
+                item -> ranks.getOrDefault(stableKey(item), Integer.MAX_VALUE)));
+        return result;
+    }
+
+    static String stableKey(RedPacketItem item) {
+        if (item == null) return "";
+        if (item.id != null && !item.id.isBlank()) return "id:" + item.id + ":" + item.type;
+        return "title:" + item.course + ":" + item.title;
+    }
+
+    static List<String> mergeVisibleOrder(List<String> globalOrder,
+                                          List<String> reorderedVisibleKeys) {
+        ArrayList<String> result = new ArrayList<>();
+        if (globalOrder != null) result.addAll(globalOrder);
+        if (reorderedVisibleKeys == null || reorderedVisibleKeys.isEmpty()) return result;
+        Set<String> visible = new LinkedHashSet<>(reorderedVisibleKeys);
+        int replacement = 0;
+        for (int i = 0; i < result.size() && replacement < reorderedVisibleKeys.size(); i++) {
+            if (visible.contains(result.get(i))) {
+                result.set(i, reorderedVisibleKeys.get(replacement++));
+            }
+        }
         return result;
     }
 

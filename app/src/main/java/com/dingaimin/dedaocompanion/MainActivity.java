@@ -2,6 +2,7 @@ package com.dingaimin.dedaocompanion;
 
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.app.Dialog;
 import android.app.usage.UsageStatsManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -27,8 +28,11 @@ import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -39,6 +43,10 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.recyclerview.widget.ItemTouchHelper;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -207,6 +215,8 @@ public final class MainActivity extends Activity {
             case "play_pause": playPauseAction.performClick(); break;
             case "next": nextAction.performClick(); break;
             case "continuous": primaryAction.performClick(); break;
+            case "queue": showPlaybackQueue(false); break;
+            case "queue_manage": showPlaybackQueue(true); break;
             case "first_row":
                 submitted = !episodeRows.isEmpty() && episodeRows.get(0).performClick();
                 break;
@@ -335,7 +345,7 @@ public final class MainActivity extends Activity {
         pickers.setOrientation(LinearLayout.HORIZONTAL);
         pickers.setGravity(Gravity.CENTER_VERTICAL);
         pickers.setPadding(dp(14), 0, dp(14), dp(6));
-        sortOrder = spinner(new String[]{"最新领取优先", "最早领取优先"});
+        sortOrder = spinner(new String[]{"最新领取优先", "最早领取优先", "自定义顺序"});
         courseFilter = spinner(new String[]{"全部课程"});
         sortOrder.setSelection(getSharedPreferences("ui_preferences", MODE_PRIVATE)
                 .getInt("sort_order", 0));
@@ -452,12 +462,17 @@ public final class MainActivity extends Activity {
         controls.addView(previousAction, new LinearLayout.LayoutParams(0, dp(52), 1f));
         playPauseAction = mediaButton("播放", android.R.drawable.ic_media_play,
                 v -> togglePlayback(), true);
-        LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(dp(88), dp(52));
-        playParams.setMargins(dp(8), 0, dp(8), 0);
+        LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(dp(76), dp(52));
+        playParams.setMargins(dp(6), 0, dp(6), 0);
         controls.addView(playPauseAction, playParams);
         nextAction = mediaButton("下一个", android.R.drawable.ic_media_next,
                 v -> playNext(), false);
         controls.addView(nextAction, new LinearLayout.LayoutParams(0, dp(52), 1f));
+        Button queueAction = mediaButton("队列", android.R.drawable.ic_menu_sort_by_size,
+                v -> showPlaybackQueue(), false);
+        LinearLayout.LayoutParams queueParams = new LinearLayout.LayoutParams(dp(68), dp(52));
+        queueParams.setMargins(dp(6), 0, 0, 0);
+        controls.addView(queueAction, queueParams);
         player.addView(controls, matchWrap());
         return player;
     }
@@ -1210,11 +1225,16 @@ public final class MainActivity extends Activity {
         RedPacketItem previouslyCurrent = QueueStore.current(this);
         String selectedCourse = courseFilter.getSelectedItem() == null ? "全部课程" : String.valueOf(courseFilter.getSelectedItem());
         displayedItems.clear();
-        displayedItems.addAll(QueuePolicy.apply(
+        int orderPosition = sortOrder.getSelectedItemPosition();
+        List<RedPacketItem> filtered = QueuePolicy.apply(
                 allItems,
                 selectedCourse,
                 hideCompletedFilter != null && hideCompletedFilter.isChecked(),
-                sortOrder.getSelectedItemPosition() == 0));
+                orderPosition != 1);
+        if (orderPosition == 2) {
+            filtered = QueuePolicy.applyCustomOrder(filtered, loadCustomQueueOrder());
+        }
+        displayedItems.addAll(filtered);
         int preservedIndex = 0;
         if (previouslyCurrent != null) {
             for (int i = 0; i < displayedItems.size(); i++) {
@@ -1253,7 +1273,8 @@ public final class MainActivity extends Activity {
             primaryAction.setEnabled(allItems.isEmpty());
             return;
         }
-        TextView count = text("播放队列  ·  " + displayedItems.size() + " 条", 14, INK, Typeface.BOLD);
+        TextView count = text("有效内容  ·  " + displayedItems.size() + " 条",
+                14, INK, Typeface.BOLD);
         count.setPadding(dp(16), dp(10), dp(16), dp(9));
         list.addView(count, matchWrap());
         RedPacketItem current = QueueStore.current(this);
@@ -1339,6 +1360,367 @@ public final class MainActivity extends Activity {
         }
         primaryAction.setEnabled(true);
         primaryAction.setText("连续播放  ·  " + displayedItems.size() + " 条");
+    }
+
+    private void showPlaybackQueue() {
+        showPlaybackQueue(false);
+    }
+
+    private void showPlaybackQueue(boolean initiallyManaging) {
+        if (displayedItems.isEmpty()) {
+            Toast.makeText(this, "播放队列还是空的，请先刷新", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        ArrayList<RedPacketItem> workingQueue = new ArrayList<>(displayedItems);
+        dialog.setContentView(buildPlaybackQueueSheet(dialog, workingQueue, initiallyManaging));
+        dialog.setCanceledOnTouchOutside(true);
+        dialog.show();
+
+        Window window = dialog.getWindow();
+        if (window == null) return;
+        window.setBackgroundDrawableResource(android.R.color.transparent);
+        window.getDecorView().setPadding(0, 0, 0, 0);
+        window.setGravity(Gravity.BOTTOM);
+        window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        WindowManager.LayoutParams attributes = window.getAttributes();
+        attributes.dimAmount = 0.48f;
+        window.setAttributes(attributes);
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+                Math.min(screenHeight - dp(72), dp(620)));
+    }
+
+    private View buildPlaybackQueueSheet(Dialog dialog, ArrayList<RedPacketItem> workingQueue,
+                                         boolean managing) {
+        QueueAdapter[] adapterHolder = new QueueAdapter[1];
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(0, dp(8), 0, 0);
+        sheet.setBackground(roundTopRect(Color.WHITE, 22));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(20), 0, dp(14), 0);
+        if (managing) {
+            View leadingSpace = new View(this);
+            header.addView(leadingSpace, new LinearLayout.LayoutParams(dp(64), dp(56)));
+            LinearLayout titleBlock = new LinearLayout(this);
+            titleBlock.setOrientation(LinearLayout.VERTICAL);
+            titleBlock.setGravity(Gravity.CENTER);
+            titleBlock.addView(text("管理播放队列", 17, INK, Typeface.BOLD),
+                    new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            titleBlock.addView(text("按住右侧把手拖动排序", 11, MUTED, Typeface.NORMAL),
+                    new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            header.addView(titleBlock, new LinearLayout.LayoutParams(0, dp(64), 1f));
+            Button done = compactButton("完成", v -> {
+                if (adapterHolder[0] != null) adapterHolder[0].persistIfChanged();
+                ArrayList<RedPacketItem> updated = new ArrayList<>(displayedItems);
+                dialog.setContentView(buildPlaybackQueueSheet(dialog, updated, false));
+            }, false);
+            done.setTextColor(ORANGE);
+            done.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT));
+            header.addView(done, new LinearLayout.LayoutParams(dp(64), dp(48)));
+        } else {
+            LinearLayout modeChip = new LinearLayout(this);
+            modeChip.setGravity(Gravity.CENTER_VERTICAL);
+            modeChip.setPadding(dp(10), 0, dp(12), 0);
+            modeChip.setBackground(roundRect(Color.rgb(247, 247, 248), 22));
+            ImageView orderIcon = new ImageView(this);
+            orderIcon.setImageResource(android.R.drawable.ic_menu_sort_by_size);
+            orderIcon.setColorFilter(INK);
+            orderIcon.setContentDescription("顺序播放");
+            modeChip.addView(orderIcon, new LinearLayout.LayoutParams(dp(24), dp(24)));
+            TextView title = text("顺序播放  ·  " + workingQueue.size() + " 条",
+                    17, INK, Typeface.BOLD);
+            title.setPadding(dp(8), 0, 0, 0);
+            modeChip.addView(title, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
+            header.addView(modeChip, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
+            View spacer = new View(this);
+            header.addView(spacer, new LinearLayout.LayoutParams(0, dp(44), 1f));
+            Button manage = compactButton("管理", v -> dialog.setContentView(
+                    buildPlaybackQueueSheet(dialog, workingQueue, true)), false);
+            manage.setTextColor(INK);
+            manage.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT));
+            header.addView(manage, new LinearLayout.LayoutParams(dp(68), dp(48)));
+        }
+        sheet.addView(header, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(68)));
+
+        View headerDivider = new View(this);
+        headerDivider.setBackgroundColor(LINE);
+        sheet.addView(headerDivider, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+
+        RecyclerView queueList = new RecyclerView(this);
+        queueList.setLayoutManager(new LinearLayoutManager(this));
+        queueList.setClipToPadding(false);
+        queueList.setPadding(dp(14), dp(4), dp(14), dp(12));
+        queueList.setHasFixedSize(true);
+        QueueAdapter adapter = new QueueAdapter(dialog, workingQueue, managing);
+        adapterHolder[0] = adapter;
+        queueList.setAdapter(adapter);
+        if (managing) {
+            ItemTouchHelper helper = new ItemTouchHelper(new ItemTouchHelper.SimpleCallback(
+                    ItemTouchHelper.UP | ItemTouchHelper.DOWN, 0) {
+                @Override public boolean onMove(RecyclerView recyclerView,
+                                                RecyclerView.ViewHolder source,
+                                                RecyclerView.ViewHolder target) {
+                    return adapter.move(source.getBindingAdapterPosition(),
+                            target.getBindingAdapterPosition());
+                }
+
+                @Override public void onSwiped(RecyclerView.ViewHolder viewHolder, int direction) {
+                }
+
+                @Override public boolean isLongPressDragEnabled() {
+                    return false;
+                }
+
+                @Override public float getMoveThreshold(RecyclerView.ViewHolder viewHolder) {
+                    return 0.55f;
+                }
+
+                @Override public void onSelectedChanged(RecyclerView.ViewHolder viewHolder,
+                                                        int actionState) {
+                    super.onSelectedChanged(viewHolder, actionState);
+                    if (viewHolder != null && actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
+                        viewHolder.itemView.setElevation(dp(10));
+                        viewHolder.itemView.setScaleX(1.015f);
+                        viewHolder.itemView.setScaleY(1.015f);
+                    }
+                }
+
+                @Override public void clearView(RecyclerView recyclerView,
+                                                RecyclerView.ViewHolder viewHolder) {
+                    super.clearView(recyclerView, viewHolder);
+                    viewHolder.itemView.animate()
+                            .scaleX(1f).scaleY(1f).setDuration(120).start();
+                    viewHolder.itemView.setElevation(0f);
+                    adapter.persistIfChanged();
+                }
+            });
+            helper.attachToRecyclerView(queueList);
+            adapter.setDragHelper(helper);
+        }
+        sheet.addView(queueList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        int currentIndex = adapter.currentIndex();
+        if (currentIndex > 0) queueList.post(() -> queueList.scrollToPosition(currentIndex));
+
+        if (managing) {
+            View footerDivider = new View(this);
+            footerDivider.setBackgroundColor(LINE);
+            sheet.addView(footerDivider, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+            TextView footer = text("拖动后自动保存，连续播放会按新顺序进行",
+                    12, MUTED, Typeface.NORMAL);
+            footer.setGravity(Gravity.CENTER);
+            footer.setBackgroundColor(Color.rgb(248, 248, 250));
+            sheet.addView(footer, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        }
+        return sheet;
+    }
+
+    private final class QueueAdapter extends RecyclerView.Adapter<QueueAdapter.QueueHolder> {
+        private final Dialog dialog;
+        private final ArrayList<RedPacketItem> items;
+        private final boolean managing;
+        private final RedPacketItem current = QueueStore.current(MainActivity.this);
+        private ItemTouchHelper dragHelper;
+        private boolean changed;
+
+        QueueAdapter(Dialog dialog, ArrayList<RedPacketItem> items, boolean managing) {
+            this.dialog = dialog;
+            this.items = items;
+            this.managing = managing;
+        }
+
+        void setDragHelper(ItemTouchHelper helper) {
+            dragHelper = helper;
+        }
+
+        int currentIndex() {
+            for (int i = 0; i < items.size(); i++) if (isCurrent(items.get(i))) return i;
+            return -1;
+        }
+
+        boolean move(int from, int to) {
+            if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION || from == to) {
+                return false;
+            }
+            RedPacketItem moved = items.remove(from);
+            items.add(to, moved);
+            changed = true;
+            notifyItemMoved(from, to);
+            return true;
+        }
+
+        void persistIfChanged() {
+            if (!changed) return;
+            changed = false;
+            persistEditedQueueOrder(items);
+        }
+
+        private boolean isCurrent(RedPacketItem item) {
+            return actualMediaTitle.isBlank()
+                    ? current != null && current.id.equals(item.id)
+                    : actualMediaTitle.equals(item.title);
+        }
+
+        @Override public QueueHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            LinearLayout container = new LinearLayout(MainActivity.this);
+            container.setOrientation(LinearLayout.VERTICAL);
+
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(8), dp(7), dp(4), dp(6));
+
+            ImageView state = new ImageView(MainActivity.this);
+            row.addView(state, new LinearLayout.LayoutParams(dp(28), dp(28)));
+
+            LinearLayout copy = new LinearLayout(MainActivity.this);
+            copy.setOrientation(LinearLayout.VERTICAL);
+            copy.setPadding(dp(10), 0, dp(8), 0);
+            TextView title = text("", 15, INK, Typeface.NORMAL);
+            title.setSingleLine(true);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            TextView meta = text("", 11, MUTED, Typeface.NORMAL);
+            meta.setSingleLine(true);
+            meta.setEllipsize(TextUtils.TruncateAt.END);
+            copy.addView(title, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+            copy.addView(meta, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(23)));
+            row.addView(copy, new LinearLayout.LayoutParams(0, dp(54), 1f));
+
+            ImageView handle = new ImageView(MainActivity.this);
+            handle.setImageResource(android.R.drawable.ic_menu_sort_by_size);
+            handle.setColorFilter(Color.rgb(150, 153, 160));
+            handle.setPadding(dp(10), dp(10), dp(8), dp(10));
+            row.addView(handle, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+            container.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(managing ? 77 : 73)));
+            View divider = new View(MainActivity.this);
+            divider.setBackgroundColor(LINE);
+            LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
+            dividerParams.setMargins(dp(46), 0, 0, 0);
+            container.addView(divider, dividerParams);
+            container.setLayoutParams(new RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(managing ? 78 : 74)));
+            return new QueueHolder(container, row, state, title, meta, handle);
+        }
+
+        @Override public void onBindViewHolder(QueueHolder holder, int position) {
+            RedPacketItem item = items.get(position);
+            boolean selected = isCurrent(item);
+            holder.row.setBackgroundColor(selected ? SOFT_ORANGE : Color.WHITE);
+            holder.state.setImageResource(selected ? android.R.drawable.ic_media_play
+                    : android.R.drawable.ic_media_next);
+            holder.state.setColorFilter(selected ? ORANGE : Color.rgb(185, 188, 194));
+            holder.state.setAlpha(selected ? 1f : 0.32f);
+            holder.state.setContentDescription(selected ? "当前播放" : "队列内容");
+            holder.title.setText(item.title);
+            holder.title.setTextColor(selected ? ORANGE : INK);
+            holder.title.setTypeface(Typeface.DEFAULT,
+                    selected ? Typeface.BOLD : Typeface.NORMAL);
+            holder.meta.setText((item.course.isBlank() ? "未识别课程" : item.course)
+                    + (selected ? "  ·  正在播放" : ""));
+            holder.meta.setTextColor(selected ? ORANGE : MUTED);
+            holder.handle.setVisibility(managing ? View.VISIBLE : View.GONE);
+            holder.handle.setContentDescription("按住拖动 " + item.title);
+            holder.handle.setOnTouchListener(managing ? (view, event) -> {
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN && dragHelper != null) {
+                    dragHelper.startDrag(holder);
+                }
+                return false;
+            } : null);
+            holder.row.setOnClickListener(managing ? null : v -> {
+                int index = holder.getBindingAdapterPosition();
+                if (index == RecyclerView.NO_POSITION) return;
+                QueueStore.save(MainActivity.this, displayedItems, index);
+                dialog.dismiss();
+                playTitle(items.get(index).title);
+            });
+        }
+
+        @Override public int getItemCount() {
+            return items.size();
+        }
+
+        final class QueueHolder extends RecyclerView.ViewHolder {
+            final LinearLayout row;
+            final ImageView state;
+            final TextView title;
+            final TextView meta;
+            final ImageView handle;
+
+            QueueHolder(View itemView, LinearLayout row, ImageView state,
+                        TextView title, TextView meta, ImageView handle) {
+                super(itemView);
+                this.row = row;
+                this.state = state;
+                this.title = title;
+                this.meta = meta;
+                this.handle = handle;
+            }
+        }
+    }
+
+    private void persistEditedQueueOrder(List<RedPacketItem> reorderedVisibleItems) {
+        if (reorderedVisibleItems == null || reorderedVisibleItems.isEmpty()) return;
+        List<RedPacketItem> baseOrder = QueuePolicy.apply(
+                allItems, "全部课程", false, sortOrder.getSelectedItemPosition() != 1);
+        ArrayList<String> globalOrder = new ArrayList<>();
+        if (sortOrder.getSelectedItemPosition() == 2) {
+            globalOrder.addAll(loadCustomQueueOrder());
+        }
+        LinkedHashSet<String> available = new LinkedHashSet<>();
+        for (RedPacketItem item : baseOrder) available.add(QueuePolicy.stableKey(item));
+        globalOrder.removeIf(key -> !available.contains(key));
+        for (String key : available) if (!globalOrder.contains(key)) globalOrder.add(key);
+
+        ArrayList<String> reorderedKeys = new ArrayList<>();
+        for (RedPacketItem item : reorderedVisibleItems) {
+            reorderedKeys.add(QueuePolicy.stableKey(item));
+        }
+        saveCustomQueueOrder(QueuePolicy.mergeVisibleOrder(globalOrder, reorderedKeys));
+        getSharedPreferences("ui_preferences", MODE_PRIVATE).edit()
+                .putInt("sort_order", 2)
+                .apply();
+        sortOrder.setSelection(2);
+        applyFilters();
+    }
+
+    private List<String> loadCustomQueueOrder() {
+        ArrayList<String> result = new ArrayList<>();
+        String raw = getSharedPreferences("ui_preferences", MODE_PRIVATE)
+                .getString("custom_queue_order", "[]");
+        try {
+            JSONArray values = new JSONArray(raw == null ? "[]" : raw);
+            for (int i = 0; i < values.length(); i++) {
+                String key = values.optString(i, "");
+                if (!key.isBlank() && !result.contains(key)) result.add(key);
+            }
+        } catch (Exception ignored) {
+        }
+        return result;
+    }
+
+    private void saveCustomQueueOrder(List<String> order) {
+        JSONArray values = new JSONArray();
+        for (String key : order) values.put(key);
+        getSharedPreferences("ui_preferences", MODE_PRIVATE).edit()
+                .putString("custom_queue_order", values.toString())
+                .apply();
     }
 
     private void renderEmpty(String message) {
@@ -1549,6 +1931,14 @@ public final class MainActivity extends Activity {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(fill);
         drawable.setCornerRadius(dp(radiusDp));
+        return drawable;
+    }
+
+    private GradientDrawable roundTopRect(int fill, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(fill);
+        float radius = dp(radiusDp);
+        drawable.setCornerRadii(new float[]{radius, radius, radius, radius, 0, 0, 0, 0});
         return drawable;
     }
 

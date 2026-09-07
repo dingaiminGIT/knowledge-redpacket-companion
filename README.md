@@ -10,6 +10,7 @@
 - 普通同步通过得到自己的登录态确认权益，只回传播放所需的白名单字段；
 - 无障碍服务仅作为旧版得到或特殊机型的兼容路径；
 - 支持新旧顺序、课程筛选和隐藏已学完；
+- 支持查看完整播放队列，并在管理模式中拖动条目调整连续播放顺序；
 - 新缓存中的每条内容通过 `audio_id + DDPlayerService action=open` 精确点播，
   不依赖得到当前播放队列；旧缓存才使用队列同步兼容路径；
 - MediaSession 负责读取官方标题、进度和播放状态；通知访问服务识别播完状态并
@@ -38,7 +39,7 @@
 
 ## 下载
 
-[下载 0.2.5 APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.2.5/knowledge-redpacket-companion-0.2.5.apk)
+[下载 0.3.1 APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.3.1/knowledge-redpacket-companion-0.3.1.apk)
 
 ## 构建与验证
 

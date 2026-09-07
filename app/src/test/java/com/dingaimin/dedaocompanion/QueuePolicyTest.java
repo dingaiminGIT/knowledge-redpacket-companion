@@ -38,4 +38,32 @@ public final class QueuePolicyTest {
         List<RedPacketItem> result = QueuePolicy.apply(source, "课程乙", true, true);
         assertEquals(0, result.size());
     }
+
+    @Test public void customOrderOverridesClaimTimeOrder() {
+        List<RedPacketItem> sorted = QueuePolicy.apply(source, "全部课程", false, true);
+        List<RedPacketItem> result = QueuePolicy.applyCustomOrder(sorted, List.of(
+                QueuePolicy.stableKey(oldest),
+                QueuePolicy.stableKey(newest),
+                QueuePolicy.stableKey(middle)));
+
+        assertEquals(List.of("最早未学完", "最新未学完", "中间已学完"),
+                result.stream().map(item -> item.title).toList());
+    }
+
+    @Test public void customOrderKeepsNewItemsAtTheEnd() {
+        List<RedPacketItem> sorted = QueuePolicy.apply(source, "全部课程", false, true);
+        List<RedPacketItem> result = QueuePolicy.applyCustomOrder(sorted, List.of(
+                QueuePolicy.stableKey(oldest)));
+
+        assertEquals(List.of("最早未学完", "最新未学完", "中间已学完"),
+                result.stream().map(item -> item.title).toList());
+    }
+
+    @Test public void visibleReorderKeepsFilteredOutItemsInPlace() {
+        List<String> result = QueuePolicy.mergeVisibleOrder(
+                List.of("a", "hidden", "b", "c"),
+                List.of("c", "a", "b"));
+
+        assertEquals(List.of("c", "hidden", "a", "b"), result);
+    }
 }

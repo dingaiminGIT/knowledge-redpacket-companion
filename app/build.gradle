@@ -10,8 +10,8 @@ android {
         applicationId 'com.dingaimin.dedaocompanion'
         minSdk 26
         targetSdk 35
-        versionCode 7
-        versionName '0.2.5'
+        versionCode 9
+        versionName '0.3.1'
     }
 
     buildTypes {
@@ -28,5 +28,6 @@ android {
 }
 
 dependencies {
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
     testImplementation 'junit:junit:4.13.2'
 }
