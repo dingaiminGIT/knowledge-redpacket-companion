@@ -12,6 +12,7 @@ import android.os.Build;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.service.notification.NotificationListenerService;
+import android.service.notification.StatusBarNotification;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 
 public final class DedaoSessionListener extends NotificationListenerService {
+    private static final String DEDAO_PACKAGE = "com.luojilab.player";
     private static volatile boolean connected;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -51,7 +53,7 @@ public final class DedaoSessionListener extends NotificationListenerService {
         if (sessions == null) return;
         Set<MediaSession.Token> activeTokens = new HashSet<>();
         for (MediaController controller : sessions) {
-            if (!"com.luojilab.player".equals(controller.getPackageName())) continue;
+            if (!DEDAO_PACKAGE.equals(controller.getPackageName())) continue;
             MediaSession.Token token = controller.getSessionToken();
             activeTokens.add(token);
             if (observed.containsKey(token)) continue;
@@ -66,6 +68,39 @@ public final class DedaoSessionListener extends NotificationListenerService {
         for (MediaSession.Token token : stale) {
             SessionObserver observer = observed.remove(token);
             if (observer != null) observer.dispose();
+        }
+    }
+
+    @Override public void onNotificationPosted(StatusBarNotification notification) {
+        handlePlayerNotification(notification, "notification_posted");
+    }
+
+    @Override public void onNotificationRemoved(StatusBarNotification notification) {
+        handlePlayerNotification(notification, "notification_removed");
+    }
+
+    /**
+     * Xiaomi may suspend ordinary Handler work shortly after the display turns off even while a
+     * foreground service is present. The official player still updates its media notification at
+     * completion, and NotificationListenerService is a system-bound wake-up path. Use that signal
+     * to inspect MediaSession synchronously instead of waiting for a delayed poll to run.
+     */
+    private void handlePlayerNotification(StatusBarNotification notification, String source) {
+        if (notification == null || !DEDAO_PACKAGE.equals(notification.getPackageName())) return;
+        getSharedPreferences("page_probe", MODE_PRIVATE).edit()
+                .putLong("playback_monitor_last_notification_at", System.currentTimeMillis())
+                .putString("playback_monitor_last_notification_source", source)
+                .apply();
+        if (manager == null || listenerComponent == null) return;
+        try {
+            syncSessions(manager.getActiveSessions(listenerComponent));
+        } catch (Exception ignored) {
+        }
+        if (!getSharedPreferences("page_probe", MODE_PRIVATE)
+                .getBoolean("companion_queue_active", false)) return;
+        PlaybackGuardService.pulse(this);
+        for (SessionObserver observer : new ArrayList<>(observed.values())) {
+            observer.observeExternalSignal(source);
         }
     }
 
@@ -136,6 +171,16 @@ public final class DedaoSessionListener extends NotificationListenerService {
 
         @Override public void onPlaybackStateChanged(PlaybackState state) {
             observeState(state, "callback");
+        }
+
+        private void observeExternalSignal(String source) {
+            MediaMetadata latestMetadata = controller.getMetadata();
+            if (!title(latestMetadata).equals(title(metadata))) {
+                onMetadataChanged(latestMetadata);
+            } else {
+                metadata = latestMetadata;
+            }
+            observeState(controller.getPlaybackState(), source);
         }
 
         private void observeState(PlaybackState state, String source) {

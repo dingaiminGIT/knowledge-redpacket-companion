@@ -17,8 +17,9 @@ import android.os.SystemClock;
 public final class PlaybackGuardService extends Service {
     private static final String CHANNEL_ID = "continuous_playback";
     private static final int NOTIFICATION_ID = 2102;
+    private static final String ACTION_ARM = "arm";
+    private static final String ACTION_PULSE = "pulse";
     private static final long ARM_WINDOW_MS = 30_000L;
-    private static final long STALE_QUEUE_MS = 2 * 60_000L;
     private static final long WAKE_LOCK_WINDOW_MS = 30 * 60_000L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -30,12 +31,27 @@ public final class PlaybackGuardService extends Service {
         if (context == null) return false;
         try {
             Intent intent = new Intent(context, PlaybackGuardService.class);
-            intent.setAction("arm");
+            intent.setAction(ACTION_ARM);
             context.startForegroundService(intent);
             record(context, "requested");
             return true;
         } catch (Exception error) {
             record(context, "failed:" + error.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    /** Renews the CPU wake window when the system delivers a player notification. */
+    static boolean pulse(Context context) {
+        if (context == null) return false;
+        try {
+            Intent intent = new Intent(context, PlaybackGuardService.class);
+            intent.setAction(ACTION_PULSE);
+            context.startForegroundService(intent);
+            record(context, "pulsed");
+            return true;
+        } catch (Exception error) {
+            record(context, "pulse_failed:" + error.getClass().getSimpleName());
             return false;
         }
     }
@@ -64,8 +80,12 @@ public final class PlaybackGuardService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && "arm".equals(intent.getAction())) {
+        if (intent != null && ACTION_ARM.equals(intent.getAction())) {
             armedUntil = SystemClock.elapsedRealtime() + ARM_WINDOW_MS;
+        }
+        if (intent != null && (ACTION_ARM.equals(intent.getAction())
+                || ACTION_PULSE.equals(intent.getAction()))) {
+            renewWakeLock();
         }
         handler.removeCallbacks(watchdog);
         handler.post(watchdog);
@@ -75,17 +95,6 @@ public final class PlaybackGuardService extends Service {
     private void runWatchdog() {
         android.content.SharedPreferences probe = getSharedPreferences("page_probe", MODE_PRIVATE);
         boolean queueActive = probe.getBoolean("companion_queue_active", false);
-        long lastActivityAt = Math.max(
-                probe.getLong("playback_monitor_last_playing_at", 0L),
-                probe.getLong("continuous_requested_at", 0L));
-        if (queueActive && lastActivityAt > 0L
-                && System.currentTimeMillis() - lastActivityAt > STALE_QUEUE_MS) {
-            queueActive = false;
-            probe.edit()
-                    .putBoolean("companion_queue_active", false)
-                    .putString("playback_monitor_status", "上次连续播放已结束")
-                    .apply();
-        }
         boolean armed = SystemClock.elapsedRealtime() < armedUntil;
         if (!queueActive && !armed) {
             stopSelf();
@@ -108,6 +117,17 @@ public final class PlaybackGuardService extends Service {
                 PowerManager.PARTIAL_WAKE_LOCK, getPackageName() + ":continuous-playback");
         wakeLock.setReferenceCounted(false);
         wakeLock.acquire(WAKE_LOCK_WINDOW_MS);
+    }
+
+    private void renewWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try {
+                wakeLock.release();
+            } catch (Exception ignored) {
+            }
+        }
+        wakeLock = null;
+        acquireWakeLock();
     }
 
     private Notification notification(String text) {
