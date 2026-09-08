@@ -15,8 +15,8 @@
   不依赖得到当前播放队列；旧缓存才使用队列同步兼容路径；
 - MediaSession 负责读取官方标题、进度和播放状态；通知访问服务识别播完状态并
   以伴侣队列的下一条 `audio_id` 续播，并用周期采样补偿偶发漏回调；
-- 连续播放期间启动前台守护和限时 CPU 唤醒，支持息屏后自动衔接；暂停超过两分钟
-  或队列结束后自动释放；
+- 连续播放期间启动前台守护并持有可续期的 CPU 唤醒，得到媒体通知会触发即时检测，
+  支持长时间息屏后自动衔接；手动暂停或队列结束后自动释放；
 - 通知访问授权和服务连接状态分别判断；服务被系统清理后自动执行解绑/重绑，
   不再要求用户反复开关授权；
 - 上一条/下一条以得到的实时标题定位，切换后读回实际标题与播放状态；后台切换未生效时
@@ -39,7 +39,7 @@
 
 ## 下载
 
-[下载 0.3.1 APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.3.1/knowledge-redpacket-companion-0.3.1.apk)
+[下载 0.3.2 APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.3.2/knowledge-redpacket-companion-0.3.2.apk)
 
 ## 构建与验证
 
