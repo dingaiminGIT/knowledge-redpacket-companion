@@ -5,6 +5,7 @@ import static org.junit.Assert.assertEquals;
 import org.junit.Test;
 
 import java.util.List;
+import java.util.Set;
 
 public final class QueuePolicyTest {
     private static RedPacketItem item(String title, String course, long claimedAt, boolean completed) {
@@ -65,5 +66,24 @@ public final class QueuePolicyTest {
                 List.of("c", "a", "b"));
 
         assertEquals(List.of("c", "hidden", "a", "b"), result);
+    }
+
+    @Test public void removalSurvivesSortingAndRefreshWithoutMutatingSource() {
+        Set<String> removed = Set.of(QueuePolicy.stableKey(middle));
+        List<RedPacketItem> fresh = QueuePolicy.apply(source, "全部课程", false, true);
+        assertEquals(List.of(newest, oldest), QueuePolicy.excluding(fresh, removed));
+        assertEquals(3, source.size());
+        assertEquals(fresh, QueuePolicy.excluding(fresh, Set.of()));
+    }
+
+    @Test public void removingBeforeCurrentPreservesTheSameEpisode() {
+        assertEquals(1, QueuePolicy.indexAfterRemoval(2, 0, 4));
+        assertEquals(1, QueuePolicy.indexAfterRemoval(1, 3, 4));
+    }
+
+    @Test public void removingCurrentSelectsSuccessorOrLastRemainingAndHandlesEmpty() {
+        assertEquals(1, QueuePolicy.indexAfterRemoval(1, 1, 3));
+        assertEquals(1, QueuePolicy.indexAfterRemoval(2, 2, 3));
+        assertEquals(-1, QueuePolicy.indexAfterRemoval(0, 0, 1));
     }
 }

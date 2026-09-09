@@ -14,6 +14,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -37,6 +38,8 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.ImageView;
+import android.widget.ImageButton;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -87,9 +90,9 @@ public final class MainActivity extends Activity {
     private Button primaryAction;
     private Button refreshAction;
     private Button diagnosticAction;
-    private Button playPauseAction;
-    private Button previousAction;
-    private Button nextAction;
+    private ImageButton playPauseAction;
+    private ImageButton previousAction;
+    private ImageButton nextAction;
     private TextView nowPlayingTitle;
     private TextView nowPlayingProgress;
     private TextView nowPlayingState;
@@ -257,13 +260,15 @@ public final class MainActivity extends Activity {
                         1_500L);
                 break;
             case "seek_near_end":
+            case "seek_last_three_minutes":
                 MediaController controller = dedaoController();
                 MediaMetadata metadata = controller == null ? null : controller.getMetadata();
                 long duration = metadata == null ? 0L
                         : metadata.getLong(MediaMetadata.METADATA_KEY_DURATION);
                 submitted = controller != null && duration > 8_000L;
                 if (submitted) {
-                    controller.getTransportControls().seekTo(duration - 7_000L);
+                    controller.getTransportControls().seekTo(Math.max(0L,
+                            duration - ("seek_last_three_minutes".equals(control) ? 180_000L : 7_000L)));
                     controller.getTransportControls().play();
                 }
                 break;
@@ -309,6 +314,10 @@ public final class MainActivity extends Activity {
         refreshAction.setTextColor(MUTED);
         refreshAction.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT));
         header.addView(refreshAction, new LinearLayout.LayoutParams(dp(58), dp(40)));
+        Button playbackSettings = compactButton("设置", v -> showPlaybackSettings(), false);
+        playbackSettings.setTextColor(MUTED);
+        playbackSettings.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT));
+        header.addView(playbackSettings, new LinearLayout.LayoutParams(dp(48), dp(40)));
         root.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
 
         permissionCard = card();
@@ -337,7 +346,7 @@ public final class MainActivity extends Activity {
 
         nowPlayingCard = buildCompactPlayer();
         LinearLayout.LayoutParams playerParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(184));
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         playerParams.setMargins(dp(14), dp(6), dp(14), dp(6));
         root.addView(nowPlayingCard, playerParams);
 
@@ -454,26 +463,29 @@ public final class MainActivity extends Activity {
         player.addView(playbackBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
 
+        FrameLayout transport = new FrameLayout(this);
         LinearLayout controls = new LinearLayout(this);
         controls.setGravity(Gravity.CENTER);
-        controls.setPadding(0, dp(6), 0, 0);
-        previousAction = mediaButton("上一个", android.R.drawable.ic_media_previous,
+        previousAction = mediaButton("上一条", MediaIcon.Kind.PREVIOUS,
                 v -> playPrevious(), false);
-        controls.addView(previousAction, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        playPauseAction = mediaButton("播放", android.R.drawable.ic_media_play,
+        controls.addView(previousAction, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        playPauseAction = mediaButton("播放", MediaIcon.Kind.PLAY,
                 v -> togglePlayback(), true);
-        LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(dp(76), dp(52));
-        playParams.setMargins(dp(6), 0, dp(6), 0);
+        LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(dp(60), dp(60));
+        playParams.setMargins(dp(12), 0, dp(12), 0);
         controls.addView(playPauseAction, playParams);
-        nextAction = mediaButton("下一个", android.R.drawable.ic_media_next,
+        nextAction = mediaButton("下一条", MediaIcon.Kind.NEXT,
                 v -> playNext(), false);
-        controls.addView(nextAction, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        Button queueAction = mediaButton("队列", android.R.drawable.ic_menu_sort_by_size,
+        controls.addView(nextAction, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        transport.addView(controls, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(72), Gravity.CENTER));
+        ImageButton queueAction = mediaButton("播放列表", MediaIcon.Kind.QUEUE,
                 v -> showPlaybackQueue(), false);
-        LinearLayout.LayoutParams queueParams = new LinearLayout.LayoutParams(dp(68), dp(52));
-        queueParams.setMargins(dp(6), 0, 0, 0);
-        controls.addView(queueAction, queueParams);
-        player.addView(controls, matchWrap());
+        queueAction.setImageDrawable(new MediaIcon(MediaIcon.Kind.QUEUE, MUTED, dp(24)));
+        transport.addView(queueAction, new FrameLayout.LayoutParams(
+                dp(48), dp(48), Gravity.END | Gravity.CENTER_VERTICAL));
+        player.addView(transport, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(80)));
         return player;
     }
 
@@ -572,12 +584,16 @@ public final class MainActivity extends Activity {
         nowPlayingState.setText(continuousStart ? "正在开始连续播放…" : "正在切换…");
         setTransportEnabled(false);
         android.content.SharedPreferences probe = getSharedPreferences("page_probe", MODE_PRIVATE);
+        boolean keepContinuous = continuousStart || probe.getBoolean("companion_queue_active", false)
+                || probe.getBoolean("companion_queue_suspended", false);
         probe.edit()
                 .remove("pending_play_title")
                 .remove("pending_play_direction")
                 .remove("expected_detail_title")
                 .remove("expected_detail_started_at")
                 .putString("direct_open_target_title", item.title)
+                .putBoolean("companion_queue_active", keepContinuous)
+                .putBoolean("companion_queue_suspended", false)
                 .commit();
         if (!OfficialPlayerControl.open(this, item.audioId)) {
             probe.edit().remove("direct_open_target_title").apply();
@@ -586,13 +602,13 @@ public final class MainActivity extends Activity {
         }
         int generation = ++directSkipGeneration;
         probe.edit()
-                .putBoolean("companion_queue_active", continuousStart)
+                .putBoolean("companion_queue_active", keepContinuous)
                 .putString("direct_open_status", "已提交：" + item.title)
                 .putLong("direct_open_at", System.currentTimeMillis())
                 .apply();
         handler.postDelayed(this::updateNowPlaying, 160L);
         handler.postDelayed(() -> verifyDirectOpen(
-                item, sequenceDirection, continuousStart, generation, 0), 650L);
+                item, sequenceDirection, keepContinuous, generation, 0), 100L);
     }
 
     private void verifyDirectOpen(RedPacketItem item, int sequenceDirection,
@@ -619,13 +635,13 @@ public final class MainActivity extends Activity {
             updateNowPlaying();
             return;
         }
-        if (attempt < 8) {
-            if (attempt == 1 || attempt == 4 || attempt == 6) {
+        if (attempt < 40) {
+            if (attempt == 24) {
                 OfficialPlayerControl.open(this, item.audioId);
             }
-            if (attempt == 2) openOfficialContextFor(item, generation);
+            if (attempt == 12) openOfficialContextFor(item, generation);
             handler.postDelayed(() -> verifyDirectOpen(
-                    item, sequenceDirection, continuousStart, generation, attempt + 1), 700L);
+                    item, sequenceDirection, continuousStart, generation, attempt + 1), 200L);
             return;
         }
         getSharedPreferences("page_probe", MODE_PRIVATE).edit()
@@ -886,9 +902,7 @@ public final class MainActivity extends Activity {
             nowPlayingState.setText("等待播放");
             nowPlayingProgress.setText("00:00 / 00:00");
             playbackBar.setProgress(0);
-            playPauseAction.setText("播放");
-            playPauseAction.setCompoundDrawablesWithIntrinsicBounds(
-                    0, android.R.drawable.ic_media_play, 0, 0);
+            updatePlayPauseVisual(false);
             setTransportEnabled(false);
             return;
         }
@@ -987,10 +1001,9 @@ public final class MainActivity extends Activity {
 
     private void updatePlayPauseVisual(boolean playing) {
         optimisticPlaying = playing;
-        playPauseAction.setText(playing ? "暂停" : "播放");
-        playPauseAction.setCompoundDrawablesWithIntrinsicBounds(0,
-                playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
-                0, 0);
+        playPauseAction.setContentDescription(playing ? "暂停" : "播放");
+        playPauseAction.setImageDrawable(new MediaIcon(
+                playing ? MediaIcon.Kind.PAUSE : MediaIcon.Kind.PLAY, Color.WHITE, dp(28)));
     }
 
     private void setTransportEnabled(boolean enabled) {
@@ -998,6 +1011,8 @@ public final class MainActivity extends Activity {
         playPauseAction.setEnabled(dedaoController() != null);
         if (previousAction != null) previousAction.setEnabled(enabled);
         if (nextAction != null) nextAction.setEnabled(enabled);
+        if (previousAction != null) previousAction.setAlpha(enabled ? 1f : 0.35f);
+        if (nextAction != null) nextAction.setAlpha(enabled ? 1f : 0.35f);
     }
 
     private String formatPlaybackTime(long millis) {
@@ -1013,6 +1028,12 @@ public final class MainActivity extends Activity {
         long now = SystemClock.elapsedRealtime();
         boolean baseline = now - lastToggleAt < 800L ? optimisticPlaying : sessionPlaying;
         boolean desiredPlaying = !baseline;
+        if (desiredPlaying && findActiveItem(liveOfficialTitle()) != null
+                && displayedIndexForTitle(liveOfficialTitle()) < 0) {
+            RedPacketItem selected = QueueStore.current(this);
+            if (selected != null) playDirect(selected, 1, false);
+            return;
+        }
         lastToggleAt = now;
         optimisticPlaying = desiredPlaying;
         int generation = ++toggleGeneration;
@@ -1062,6 +1083,8 @@ public final class MainActivity extends Activity {
 
     private void cancelPendingPlaybackSwitch() {
         ++directSkipGeneration;
+        getSharedPreferences("page_probe", MODE_PRIVATE).edit()
+                .remove("direct_open_target_title").apply();
         directOpenForegroundGeneration = 0;
         switchingToTitle = "";
         switchStartedAt = 0L;
@@ -1075,7 +1098,8 @@ public final class MainActivity extends Activity {
         boolean wasActive = probe.getBoolean("companion_queue_active", false);
         probe.edit()
                 .putBoolean("companion_queue_active", false)
-                .putBoolean("companion_queue_suspended", wasActive)
+                .putBoolean("companion_queue_suspended", wasActive
+                        || probe.getBoolean("companion_queue_suspended", false))
                 .putString("playback_monitor_status",
                         wasActive ? "连续播放已暂停" : "播放已暂停")
                 .apply();
@@ -1234,11 +1258,11 @@ public final class MainActivity extends Activity {
         if (orderPosition == 2) {
             filtered = QueuePolicy.applyCustomOrder(filtered, loadCustomQueueOrder());
         }
-        displayedItems.addAll(filtered);
+        displayedItems.addAll(QueuePolicy.excluding(filtered, removedQueueKeys()));
         int preservedIndex = 0;
         if (previouslyCurrent != null) {
             for (int i = 0; i < displayedItems.size(); i++) {
-                if (previouslyCurrent.id.equals(displayedItems.get(i).id)) {
+                if (QueuePolicy.stableKey(previouslyCurrent).equals(QueuePolicy.stableKey(displayedItems.get(i)))) {
                     preservedIndex = i;
                     break;
                 }
@@ -1367,7 +1391,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showPlaybackQueue(boolean initiallyManaging) {
-        if (displayedItems.isEmpty()) {
+        if (displayedItems.isEmpty() && removedQueueKeys().isEmpty()) {
             Toast.makeText(this, "播放队列还是空的，请先刷新", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -1412,7 +1436,7 @@ public final class MainActivity extends Activity {
             titleBlock.addView(text("管理播放队列", 17, INK, Typeface.BOLD),
                     new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            titleBlock.addView(text("按住右侧把手拖动排序", 11, MUTED, Typeface.NORMAL),
+            titleBlock.addView(text("移除条目 · 拖动排序", 11, MUTED, Typeface.NORMAL),
                     new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             header.addView(titleBlock, new LinearLayout.LayoutParams(0, dp(64), 1f));
@@ -1430,7 +1454,7 @@ public final class MainActivity extends Activity {
             modeChip.setPadding(dp(10), 0, dp(12), 0);
             modeChip.setBackground(roundRect(Color.rgb(247, 247, 248), 22));
             ImageView orderIcon = new ImageView(this);
-            orderIcon.setImageResource(android.R.drawable.ic_menu_sort_by_size);
+            orderIcon.setImageDrawable(new MediaIcon(MediaIcon.Kind.QUEUE, INK, dp(24)));
             orderIcon.setColorFilter(INK);
             orderIcon.setContentDescription("顺序播放");
             modeChip.addView(orderIcon, new LinearLayout.LayoutParams(dp(24), dp(24)));
@@ -1518,12 +1542,30 @@ public final class MainActivity extends Activity {
             footerDivider.setBackgroundColor(LINE);
             sheet.addView(footerDivider, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
-            TextView footer = text("拖动后自动保存，连续播放会按新顺序进行",
+            TextView footer = text("修改自动保存 · 仅影响本地播放列表",
                     12, MUTED, Typeface.NORMAL);
             footer.setGravity(Gravity.CENTER);
             footer.setBackgroundColor(Color.rgb(248, 248, 250));
             sheet.addView(footer, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        }
+        if (workingQueue.isEmpty()) {
+            TextView empty = text("播放列表已清空", 15, MUTED, Typeface.NORMAL);
+            empty.setGravity(Gravity.CENTER);
+            sheet.addView(empty, new LinearLayout.LayoutParams(-1, dp(48)));
+        }
+        int removedCount = removedQueueKeys().size();
+        if (removedCount > 0) {
+            Button restore = compactButton("恢复已移除的内容（" + removedCount + "）", v -> {
+                getSharedPreferences("ui_preferences", MODE_PRIVATE).edit()
+                        .remove("removed_queue_keys").apply();
+                applyFilters();
+                dialog.setContentView(buildPlaybackQueueSheet(dialog,
+                        new ArrayList<>(displayedItems), managing));
+            }, false);
+            LinearLayout.LayoutParams restoreParams = new LinearLayout.LayoutParams(-1, dp(48));
+            restoreParams.setMargins(dp(20), dp(6), dp(20), dp(16));
+            sheet.addView(restore, restoreParams);
         }
         return sheet;
     }
@@ -1601,9 +1643,13 @@ public final class MainActivity extends Activity {
             row.addView(copy, new LinearLayout.LayoutParams(0, dp(54), 1f));
 
             ImageView handle = new ImageView(MainActivity.this);
-            handle.setImageResource(android.R.drawable.ic_menu_sort_by_size);
+            handle.setImageDrawable(new MediaIcon(MediaIcon.Kind.DRAG, MUTED, dp(24)));
             handle.setColorFilter(Color.rgb(150, 153, 160));
             handle.setPadding(dp(10), dp(10), dp(8), dp(10));
+            ImageButton remove = mediaButton("移出播放列表", MediaIcon.Kind.REMOVE,
+                    v -> {}, false);
+            remove.setImageDrawable(new MediaIcon(MediaIcon.Kind.REMOVE, Color.rgb(196, 71, 64), dp(24)));
+            row.addView(remove, new LinearLayout.LayoutParams(dp(48), dp(48)));
             row.addView(handle, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
             container.addView(row, new LinearLayout.LayoutParams(
@@ -1616,15 +1662,15 @@ public final class MainActivity extends Activity {
             container.addView(divider, dividerParams);
             container.setLayoutParams(new RecyclerView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(managing ? 78 : 74)));
-            return new QueueHolder(container, row, state, title, meta, handle);
+            return new QueueHolder(container, row, state, title, meta, handle, remove);
         }
 
         @Override public void onBindViewHolder(QueueHolder holder, int position) {
             RedPacketItem item = items.get(position);
             boolean selected = isCurrent(item);
             holder.row.setBackgroundColor(selected ? SOFT_ORANGE : Color.WHITE);
-            holder.state.setImageResource(selected ? android.R.drawable.ic_media_play
-                    : android.R.drawable.ic_media_next);
+            holder.state.setImageDrawable(new MediaIcon(selected ? MediaIcon.Kind.PLAY
+                    : MediaIcon.Kind.NEXT, selected ? ORANGE : MUTED, dp(24)));
             holder.state.setColorFilter(selected ? ORANGE : Color.rgb(185, 188, 194));
             holder.state.setAlpha(selected ? 1f : 0.32f);
             holder.state.setContentDescription(selected ? "当前播放" : "队列内容");
@@ -1633,9 +1679,19 @@ public final class MainActivity extends Activity {
             holder.title.setTypeface(Typeface.DEFAULT,
                     selected ? Typeface.BOLD : Typeface.NORMAL);
             holder.meta.setText((item.course.isBlank() ? "未识别课程" : item.course)
-                    + (selected ? "  ·  正在播放" : ""));
+                    + (selected ? "  ·  当前条目" : ""));
             holder.meta.setTextColor(selected ? ORANGE : MUTED);
             holder.handle.setVisibility(managing ? View.VISIBLE : View.GONE);
+            holder.remove.setVisibility(managing ? View.VISIBLE : View.GONE);
+            holder.remove.setContentDescription("移除 " + item.title);
+            holder.remove.setOnClickListener(v -> {
+                int index = holder.getBindingAdapterPosition();
+                if (index == RecyclerView.NO_POSITION) return;
+                persistIfChanged();
+                removeQueueItem(items.get(index));
+                dialog.setContentView(buildPlaybackQueueSheet(dialog,
+                        new ArrayList<>(displayedItems), true));
+            });
             holder.handle.setContentDescription("按住拖动 " + item.title);
             holder.handle.setOnTouchListener(managing ? (view, event) -> {
                 if (event.getActionMasked() == MotionEvent.ACTION_DOWN && dragHelper != null) {
@@ -1662,17 +1718,81 @@ public final class MainActivity extends Activity {
             final TextView title;
             final TextView meta;
             final ImageView handle;
+            final ImageButton remove;
 
             QueueHolder(View itemView, LinearLayout row, ImageView state,
-                        TextView title, TextView meta, ImageView handle) {
+                        TextView title, TextView meta, ImageView handle, ImageButton remove) {
                 super(itemView);
                 this.row = row;
                 this.state = state;
                 this.title = title;
                 this.meta = meta;
                 this.handle = handle;
+                this.remove = remove;
             }
         }
+    }
+
+    private Set<String> removedQueueKeys() {
+        return new LinkedHashSet<>(getSharedPreferences("ui_preferences", MODE_PRIVATE)
+                .getStringSet("removed_queue_keys", Set.of()));
+    }
+
+    private void removeQueueItem(RedPacketItem removed) {
+        int removedIndex = -1;
+        for (int i = 0; i < displayedItems.size(); i++) {
+            if (QueuePolicy.stableKey(removed).equals(QueuePolicy.stableKey(displayedItems.get(i)))) {
+                removedIndex = i;
+                break;
+            }
+        }
+        if (removedIndex < 0) return;
+        MediaController controller = dedaoController();
+        PlaybackState state = controller == null ? null : controller.getPlaybackState();
+        boolean playing = state != null && state.getState() == PlaybackState.STATE_PLAYING;
+        String liveTitle = liveOfficialTitle();
+        int currentIndex = displayedIndexForTitle(liveTitle);
+        if (currentIndex < 0) {
+            RedPacketItem current = QueueStore.current(this);
+            currentIndex = current == null ? 0 : displayedIndexForTitle(current.title);
+        }
+        int nextIndex = QueuePolicy.indexAfterRemoval(currentIndex, removedIndex, displayedItems.size());
+        android.content.SharedPreferences probe = getSharedPreferences("page_probe", MODE_PRIVATE);
+        boolean active = probe.getBoolean("companion_queue_active", false);
+        boolean removesPlaying = removed.title.equals(liveTitle);
+        boolean removesPending = removed.title.equals(probe.getString("direct_open_target_title", ""));
+        if (removesPlaying || removesPending) {
+            cancelPendingPlaybackSwitch();
+            probe.edit().remove("direct_open_target_title").apply();
+        }
+        Set<String> removedKeys = removedQueueKeys();
+        removedKeys.add(QueuePolicy.stableKey(removed));
+        getSharedPreferences("ui_preferences", MODE_PRIVATE).edit()
+                .putStringSet("removed_queue_keys", removedKeys).apply();
+        applyFilters();
+        QueueStore.save(this, displayedItems, Math.max(0, nextIndex));
+        if (displayedItems.isEmpty()) {
+            cancelPendingPlaybackSwitch();
+            probe.edit().remove("direct_open_target_title")
+                    .putBoolean("companion_queue_active", false)
+                    .putBoolean("companion_queue_suspended", false).apply();
+            if (removesPlaying) applyPlaybackState(false);
+            PlaybackGuardService.stop(this);
+        } else if (removesPlaying) {
+            if (playing) {
+                // Removing the last item must not unexpectedly replay the preceding item.
+                if (removedIndex < displayedItems.size()) {
+                    playDirect(displayedItems.get(nextIndex), 1, active);
+                } else {
+                    suspendContinuousQueue();
+                    applyPlaybackState(false);
+                }
+            } else {
+                suspendContinuousQueue();
+            }
+        }
+        updateNowPlaying();
+        Toast.makeText(this, "已移出播放列表，可在列表底部恢复", Toast.LENGTH_SHORT).show();
     }
 
     private void persistEditedQueueOrder(List<RedPacketItem> reorderedVisibleItems) {
@@ -1741,18 +1861,20 @@ public final class MainActivity extends Activity {
                 || "accessibility_fallback".equals(source);
         boolean monitorConnected = listener && DedaoSessionListener.isConnected();
         boolean backgroundRestricted = isBackgroundRestricted();
-        if (listener && !monitorConnected && !backgroundRestricted) {
+        android.app.NotificationManager notifications = getSystemService(android.app.NotificationManager.class);
+        boolean notificationsDisabled = notifications != null && !notifications.areNotificationsEnabled();
+        if (listener && !monitorConnected && !backgroundRestricted && !notificationsDisabled) {
             // The authorization is still valid. Rebinding is an internal recovery detail and
             // should stay silent instead of looking like another permission request.
             permissionCard.setVisibility(View.GONE);
             return;
         }
-        if (monitorConnected && (!needsFallback || accessibility) && !backgroundRestricted) {
+        if (monitorConnected && (!needsFallback || accessibility) && !backgroundRestricted && !notificationsDisabled) {
             permissionCard.setVisibility(View.GONE);
             return;
         }
         permissionCard.setVisibility(View.VISIBLE);
-        String permissionTitle = backgroundRestricted ? "允许后台连续播放"
+        String permissionTitle = notificationsDisabled && listener ? "显示连续播放通知" : backgroundRestricted ? "允许后台连续播放"
                 : (!listener ? "开启连续播放权限"
                 : (!monitorConnected ? "正在恢复连续播放监控" : "可选：开启兼容模式"));
         permissionCard.addView(text(permissionTitle, 14, INK, Typeface.BOLD), matchWrap());
@@ -1761,6 +1883,11 @@ public final class MainActivity extends Activity {
             copy.setPadding(0, dp(4), 0, dp(8));
             permissionCard.addView(copy, matchWrap());
             permissionCard.addView(compactButton("开启连续播放", v -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")), false), matchWrap());
+        } else if (notificationsDisabled) {
+            TextView copy = text("允许显示连续播放的常驻状态。通知权限与“播放监控”是两个独立授权；拒绝后仍可操作播放。", 12, MUTED, Typeface.NORMAL);
+            copy.setPadding(0, dp(4), 0, dp(8));
+            permissionCard.addView(copy, matchWrap());
+            permissionCard.addView(compactButton("允许播放通知", v -> requestPlaybackNotifications(), false), matchWrap());
         } else if (backgroundRestricted) {
             TextView copy = text("系统把伴侣设成了“受限”，锁屏清理会停止连续播放。请在应用信息的省电策略中选择“不限制”，并在最近任务里锁定伴侣；只需设置一次。", 12, MUTED, Typeface.NORMAL);
             copy.setPadding(0, dp(4), 0, dp(8));
@@ -1782,6 +1909,40 @@ public final class MainActivity extends Activity {
         Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 Uri.fromParts("package", getPackageName(), null));
         startActivity(intent);
+    }
+
+    private void showPlaybackSettings() {
+        String manufacturer = (Build.MANUFACTURER + " " + Build.BRAND).toLowerCase(Locale.US);
+        boolean xiaomi = manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco");
+        String guidance = xiaomi
+                ? "小米 / HyperOS 需要分别检查：\n\n1. 应用信息 → 自启动：开启\n2. 耗电管理 → 省电策略：无限制\n3. 允许显示连续播放通知\n\n仅设置“无限制”仍可能被系统冻结。建议在最近任务中锁定伴侣，避免一键清理。允许后台运行可能增加耗电。"
+                : "请允许伴侣后台运行，并显示连续播放通知。若息屏后停止，请在应用信息中检查省电策略和系统的后台启动设置。允许后台运行可能增加耗电。";
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("连续播放设置")
+                .setMessage(guidance + "\n\n播放监控权限与显示通知权限相互独立；设置后仍建议息屏试听一次。")
+                .setPositiveButton("应用设置", (dialog, which) -> openApplicationDetails())
+                .setNeutralButton("复制诊断", (dialog, which) -> copyDiagnostics())
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void requestPlaybackNotifications() {
+        android.content.SharedPreferences preferences = getSharedPreferences("ui_preferences", MODE_PRIVATE);
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                && (!preferences.getBoolean("notification_permission_requested", false)
+                    || shouldShowRequestPermissionRationale(android.Manifest.permission.POST_NOTIFICATIONS))) {
+            preferences.edit().putBoolean("notification_permission_requested", true).apply();
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 33);
+        } else {
+            startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+        }
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 33) renderPermissions();
     }
 
     private void requestBackgroundPlaybackAccess() {
@@ -1848,8 +2009,6 @@ public final class MainActivity extends Activity {
 
     private boolean isBackgroundRestricted() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false;
-        PowerManager power = getSystemService(PowerManager.class);
-        if (power != null && power.isIgnoringBatteryOptimizations(getPackageName())) return false;
         ActivityManager activityManager = getSystemService(ActivityManager.class);
         if (activityManager != null && activityManager.isBackgroundRestricted()) return true;
         UsageStatsManager usage = getSystemService(UsageStatsManager.class);
@@ -1884,20 +2043,15 @@ public final class MainActivity extends Activity {
         return button;
     }
 
-    private Button mediaButton(String label, int icon, View.OnClickListener click, boolean primary) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setAllCaps(false);
-        button.setTextSize(13);
-        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setTextColor(primary ? Color.WHITE : INK);
-        button.setCompoundDrawablesWithIntrinsicBounds(0, icon, 0, 0);
-        button.setCompoundDrawableTintList(ColorStateList.valueOf(primary ? Color.WHITE : INK));
-        button.setCompoundDrawablePadding(dp(3));
-        button.setGravity(Gravity.CENTER);
-        button.setBackground(primary ? roundRect(ORANGE, 40) : roundRect(Color.WHITE, 40, LINE));
-        button.setMinWidth(0);
-        button.setMinHeight(0);
+    private ImageButton mediaButton(String label, MediaIcon.Kind icon, View.OnClickListener click, boolean primary) {
+        ImageButton button = new ImageButton(this);
+        button.setContentDescription(label);
+        button.setTooltipText(label);
+        button.setImageDrawable(new MediaIcon(icon, primary ? Color.WHITE : INK, dp(primary ? 28 : 24)));
+        button.setScaleType(ImageView.ScaleType.CENTER);
+        button.setPadding(0, 0, 0, 0);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(primary ? 0x33ffffff : 0x11000000),
+                roundRect(primary ? ORANGE : Color.TRANSPARENT, 40), roundRect(Color.WHITE, 40)));
         button.setElevation(0f);
         button.setStateListAnimator(null);
         button.setOnClickListener(click);

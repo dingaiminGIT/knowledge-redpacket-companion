@@ -50,9 +50,15 @@ final class DiagnosticReport {
         report.append("连续播放状态: ").append(probe.getString("playback_monitor_status", "-")).append('\n');
         report.append("连续播放队列: ").append(probe.getBoolean("companion_queue_active", false) ? "运行中" : "未运行").append('\n');
         report.append("连续播放守护: ").append(probe.getString("playback_guard_status", "-")).append('\n');
+        android.app.NotificationManager notifications = context.getSystemService(android.app.NotificationManager.class);
+        report.append("显示播放通知: ").append(notifications != null && notifications.areNotificationsEnabled() ? "已允许" : "未允许").append('\n');
+        report.append("守护采样距今: ").append(ageSeconds(now, probe.getLong("playback_guard_watchdog_at", 0L))).append('\n');
+        report.append("播放采样距今: ").append(ageSeconds(now, probe.getLong("playback_monitor_last_callback_at", 0L))).append('\n');
         report.append("后台省电豁免: ").append(batteryExempt(context) ? "已允许" : "未允许").append('\n');
         report.append("监控采样来源: ").append(probe.getString("playback_monitor_last_source", "-")).append('\n');
         report.append("下一条启动尝试: ").append(probe.getInt("playback_monitor_open_attempts", 0)).append('\n');
+        report.append("最近衔接阶段: ").append(probe.getString("playback_transition_stage", "-")).append('\n');
+        report.append("最近衔接耗时(ms): ").append(probe.getLong("playback_transition_ms", -1L)).append('\n');
         report.append("同步进行中: ").append(probe.getBoolean("scan_requested", false)).append('\n');
         report.append("同步尝试: ").append(probe.getString("scan_attempt_id", "-")).append('\n');
         report.append("同步已用时: ").append(ageSeconds(now, scanStarted)).append('\n');

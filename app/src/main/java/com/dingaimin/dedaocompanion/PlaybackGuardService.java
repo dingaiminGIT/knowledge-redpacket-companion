@@ -25,6 +25,7 @@ public final class PlaybackGuardService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable watchdog = this::runWatchdog;
     private PowerManager.WakeLock wakeLock;
+    private long wakeLockAcquiredAt;
     private long armedUntil;
 
     static boolean start(Context context) {
@@ -60,6 +61,7 @@ public final class PlaybackGuardService extends Service {
         if (context == null) return;
         try {
             context.stopService(new Intent(context, PlaybackGuardService.class));
+            record(context, "stopped");
         } catch (Exception ignored) {
         }
     }
@@ -74,7 +76,7 @@ public final class PlaybackGuardService extends Service {
             channel.setShowBadge(false);
             manager.createNotificationChannel(channel);
         }
-        startForeground(NOTIFICATION_ID, notification("息屏后仍会自动播放下一条"));
+        startForeground(NOTIFICATION_ID, notification("正在监控播放进度 · 请允许后台运行"));
         armedUntil = SystemClock.elapsedRealtime() + ARM_WINDOW_MS;
         record(this, "active");
     }
@@ -110,23 +112,22 @@ public final class PlaybackGuardService extends Service {
     }
 
     private void acquireWakeLock() {
-        if (wakeLock != null && wakeLock.isHeld()) return;
+        // Refresh before expiry, even when a long episode produces no notifications.
+        // Ordinary notification bursts must not release/re-acquire the CPU lock each time.
+        if (wakeLock != null && wakeLock.isHeld()) {
+            if (SystemClock.elapsedRealtime() - wakeLockAcquiredAt < WAKE_LOCK_WINDOW_MS - 60_000L) return;
+            wakeLock.release();
+        }
         PowerManager power = getSystemService(PowerManager.class);
         if (power == null) return;
         wakeLock = power.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK, getPackageName() + ":continuous-playback");
         wakeLock.setReferenceCounted(false);
         wakeLock.acquire(WAKE_LOCK_WINDOW_MS);
+        wakeLockAcquiredAt = SystemClock.elapsedRealtime();
     }
 
     private void renewWakeLock() {
-        if (wakeLock != null && wakeLock.isHeld()) {
-            try {
-                wakeLock.release();
-            } catch (Exception ignored) {
-            }
-        }
-        wakeLock = null;
         acquireWakeLock();
     }
 

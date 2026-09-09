@@ -49,6 +49,21 @@ final class QueuePolicy {
         return "title:" + item.course + ":" + item.title;
     }
 
+    static List<RedPacketItem> excluding(List<RedPacketItem> source, Set<String> removedKeys) {
+        ArrayList<RedPacketItem> result = new ArrayList<>();
+        for (RedPacketItem item : source) {
+            if (!removedKeys.contains(stableKey(item))) result.add(item);
+        }
+        return result;
+    }
+
+    /** Preserve the current identity; deleting it selects its successor, then its predecessor. */
+    static int indexAfterRemoval(int currentIndex, int removedIndex, int originalSize) {
+        if (originalSize <= 1) return -1;
+        int adjusted = currentIndex > removedIndex ? currentIndex - 1 : currentIndex;
+        return Math.max(0, Math.min(adjusted, originalSize - 2));
+    }
+
     static List<String> mergeVisibleOrder(List<String> globalOrder,
                                           List<String> reorderedVisibleKeys) {
         ArrayList<String> result = new ArrayList<>();

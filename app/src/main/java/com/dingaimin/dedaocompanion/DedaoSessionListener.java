@@ -113,6 +113,8 @@ public final class DedaoSessionListener extends NotificationListenerService {
         long lastAdvanceAt;
         long furthestPositionForTitle;
         int openGeneration;
+        long transitionStartedAt;
+        long lastPlayRequestAt;
         final Runnable completionProbe = this::pollCompletion;
 
         SessionObserver(MediaController controller) {
@@ -137,13 +139,15 @@ public final class DedaoSessionListener extends NotificationListenerService {
             RedPacketItem newItem = QueueStore.findTitle(DedaoSessionListener.this, newTitle);
             boolean queueActive = probe
                     .getBoolean("companion_queue_active", false);
+            // Ignore intermediate metadata from the official queue while an explicit open is
+            // pending. It is not another completed companion item.
+            if (!pendingTitle.isBlank() && !pendingTitle.equals(newTitle)) return;
             boolean expectedManualTransition = queueActive && expectedItem != null
                     && expectedItem.title.equals(newTitle) && !newTitle.equals(oldTitle);
             if ((!pendingTitle.isBlank() && pendingTitle.equals(newTitle))
                     || expectedManualTransition) {
                 QueueStore.selectTitle(DedaoSessionListener.this, newTitle);
                 probe.edit()
-                        .remove("direct_open_target_title")
                         .putString("playback_monitor_status", "正在播放：" + newTitle)
                         .apply();
                 ensurePlaying();
@@ -192,7 +196,8 @@ public final class DedaoSessionListener extends NotificationListenerService {
             long duration = metadata == null ? 0L
                     : metadata.getLong(MediaMetadata.METADATA_KEY_DURATION);
             long position = estimatedPosition(state);
-            furthestPositionForTitle = Math.max(furthestPositionForTitle, position);
+            furthestPositionForTitle = PlaybackCompletionPolicy.updateFurthest(
+                    furthestPositionForTitle, position, current == PlaybackState.STATE_PLAYING);
             boolean terminalState = current == PlaybackState.STATE_PAUSED
                     || current == PlaybackState.STATE_STOPPED
                     || current == PlaybackState.STATE_NONE
@@ -218,11 +223,45 @@ public final class DedaoSessionListener extends NotificationListenerService {
                         .putLong("playback_monitor_last_playing_at", System.currentTimeMillis())
                         .apply();
             }
+            PlaybackState oldState = previousState;
             previousState = state;
             scheduleCompletionProbe();
-            String pendingTitle = getSharedPreferences("page_probe", MODE_PRIVATE)
-                    .getString("direct_open_target_title", "");
-            if (!pendingTitle.isBlank()) return;
+            android.content.SharedPreferences probe = getSharedPreferences("page_probe", MODE_PRIVATE);
+            String pendingTitle = probe.getString("direct_open_target_title", "");
+            if (!pendingTitle.isBlank()) {
+                if (pendingTitle.equals(title(metadata))) {
+                    if (current == PlaybackState.STATE_PLAYING) {
+                        probe.edit().remove("direct_open_target_title").apply();
+                        recordTransition("playing");
+                        transitionStartedAt = 0L;
+                    } else if (probe.getBoolean("companion_queue_active", false)) {
+                        ensurePlaying();
+                    }
+                }
+                return;
+            }
+            if (current == PlaybackState.STATE_PLAYING
+                    && probe.getBoolean("companion_queue_suspended", false)
+                    && ("initial".equals(source) || oldState == null
+                        || oldState.getState() != PlaybackState.STATE_PLAYING)
+                    && QueueStore.findTitle(DedaoSessionListener.this, title(metadata)) != null) {
+                probe.edit().putBoolean("companion_queue_suspended", false)
+                        .putBoolean("companion_queue_active", true).apply();
+                PlaybackGuardService.start(DedaoSessionListener.this);
+                scheduleCompletionProbe();
+            }
+            if (current == PlaybackState.STATE_PAUSED && !reachedEnd
+                    && probe.getBoolean("companion_queue_active", false)
+                    && ("initial".equals(source) || (oldState != null
+                        && oldState.getState() == PlaybackState.STATE_PLAYING))) {
+                probe.edit().putBoolean("companion_queue_active", false)
+                        .putBoolean("companion_queue_suspended", true)
+                        .putString("playback_monitor_status", "连续播放已暂停").apply();
+                ++openGeneration;
+                PlaybackGuardService.stop(DedaoSessionListener.this);
+                handler.removeCallbacks(completionProbe);
+                return;
+            }
             if (!playbackSeenForTitle || !terminalState || !reachedEnd || completionHandled) return;
 
             completionHandled = true;
@@ -246,23 +285,31 @@ public final class DedaoSessionListener extends NotificationListenerService {
             handler.removeCallbacks(completionProbe);
             if (getSharedPreferences("page_probe", MODE_PRIVATE)
                     .getBoolean("companion_queue_active", false)) {
-                handler.postDelayed(completionProbe, 1_000L);
+                long duration = metadata == null ? 0L
+                        : metadata.getLong(MediaMetadata.METADATA_KEY_DURATION);
+                long position = previousState == null ? 0L : estimatedPosition(previousState);
+                handler.postDelayed(completionProbe,
+                        PlaybackCompletionPolicy.probeDelay(position, duration));
             }
         }
 
         private void pollCompletion() {
-            observeState(controller.getPlaybackState(), "poll");
+            observeExternalSignal("poll");
         }
 
         private void advanceFrom(String finishedTitle, String alreadyPlayingTitle) {
             long now = android.os.SystemClock.elapsedRealtime();
             if (now - lastAdvanceAt < 1_200L) return;
             lastAdvanceAt = now;
+            transitionStartedAt = now;
+            recordTransition("completed");
             QueueStore.selectTitle(DedaoSessionListener.this, finishedTitle);
             RedPacketItem next = QueueStore.advance(DedaoSessionListener.this);
             if (next != null && next.title.equals(alreadyPlayingTitle)) {
                 completionHandled = false;
                 ensurePlaying();
+                recordTransition("native_next");
+                transitionStartedAt = 0L;
                 getSharedPreferences("page_probe", MODE_PRIVATE).edit()
                         .putString("playback_monitor_status", "正在播放：" + next.title)
                         .apply();
@@ -288,7 +335,8 @@ public final class DedaoSessionListener extends NotificationListenerService {
             controller.getTransportControls().pause();
             getSharedPreferences("page_probe", MODE_PRIVATE).edit()
                     .putBoolean("companion_queue_active", false)
-                    .putString("playback_monitor_status", "当前队列已全部播完")
+                    .putString("playback_monitor_status", next == null
+                            ? "当前队列已全部播完" : "下一条打开失败，请点播放重试")
                     .apply();
             PlaybackGuardService.stop(DedaoSessionListener.this);
         }
@@ -296,6 +344,10 @@ public final class DedaoSessionListener extends NotificationListenerService {
         private void confirmOpenedItem(RedPacketItem item, int generation, int attempt) {
             handler.postDelayed(() -> {
                 if (generation != openGeneration) return;
+                android.content.SharedPreferences probe = getSharedPreferences("page_probe", MODE_PRIVATE);
+                // Pause, removal, and a newer manual selection must cancel queued retries.
+                if (!probe.getBoolean("companion_queue_active", false)
+                        || !item.title.equals(probe.getString("direct_open_target_title", ""))) return;
                 String currentTitle = title(controller.getMetadata());
                 if (item.title.equals(currentTitle)) {
                     PlaybackState state = controller.getPlaybackState();
@@ -307,6 +359,8 @@ public final class DedaoSessionListener extends NotificationListenerService {
                                 .putString("playback_monitor_status", "正在播放：" + item.title)
                                 .putInt("playback_monitor_open_attempts", attempt + 1)
                                 .apply();
+                        recordTransition("playing");
+                        transitionStartedAt = 0L;
                         return;
                     }
                     ensurePlaying();
@@ -314,29 +368,45 @@ public final class DedaoSessionListener extends NotificationListenerService {
                             .putString("playback_monitor_status", "正在启动下一条：" + item.title)
                             .putInt("playback_monitor_open_attempts", attempt + 1)
                             .apply();
-                    if (attempt < 20) confirmOpenedItem(item, generation, attempt + 1);
-                    return;
                 }
-                if (attempt >= 20 || !getSharedPreferences("page_probe", MODE_PRIVATE)
-                        .getBoolean("companion_queue_active", false)) {
+                if (attempt >= 40) {
                     getSharedPreferences("page_probe", MODE_PRIVATE).edit()
-                            .putString("playback_monitor_status", "下一条启动未确认，等待恢复")
+                            .remove("direct_open_target_title")
+                            .putBoolean("companion_queue_active", false)
+                            .putBoolean("companion_queue_suspended", true)
+                            .putString("playback_monitor_status", "下一条暂未开始，请点播放重试")
                             .putInt("playback_monitor_open_attempts", attempt + 1)
                             .apply();
+                    recordTransition("timeout");
+                    PlaybackGuardService.stop(DedaoSessionListener.this);
                     return;
                 }
-                if (attempt == 1 || attempt == 4 || attempt == 8 || attempt == 14) {
+                if (attempt == 24 && !item.title.equals(currentTitle)) {
                     OfficialPlayerControl.open(DedaoSessionListener.this, item.audioId);
                 }
                 confirmOpenedItem(item, generation, attempt + 1);
-            }, attempt < 4 ? 650L : 1_500L);
+            }, attempt == 0 ? 100L : 250L);
         }
 
         private void ensurePlaying() {
             PlaybackState state = controller.getPlaybackState();
-            if (state != null && state.getState() == PlaybackState.STATE_PLAYING) return;
+            if (state != null && (state.getState() == PlaybackState.STATE_PLAYING
+                    || state.getState() == PlaybackState.STATE_BUFFERING
+                    || state.getState() == PlaybackState.STATE_CONNECTING)) return;
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastPlayRequestAt < 1_000L) return;
+            lastPlayRequestAt = now;
             controller.getTransportControls().play();
-            OfficialPlayerControl.send(DedaoSessionListener.this, OfficialPlayerControl.PLAY);
+        }
+
+        private void recordTransition(String stage) {
+            if (transitionStartedAt <= 0L) return;
+            long elapsed = SystemClock.elapsedRealtime() - transitionStartedAt;
+            getSharedPreferences("page_probe", MODE_PRIVATE).edit()
+                    .putString("playback_transition_stage", stage)
+                    .putLong("playback_transition_ms", elapsed)
+                    .putLong("playback_transition_at", System.currentTimeMillis()).apply();
+            android.util.Log.i("CompanionPlayback", "transition=" + stage + " elapsed_ms=" + elapsed);
         }
 
         void dispose() {
