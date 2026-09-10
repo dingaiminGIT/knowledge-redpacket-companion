@@ -12,3 +12,4 @@ local.properties
 /*.png
 /*.mp4
 /*.xml
+.kotlin/
