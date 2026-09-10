@@ -40,24 +40,31 @@
 
 ## 下载
 
-当前开发分支为 `codex/playback-queue-refinement`（`0.3.3-dev`）：优化播放完成后的
-事件响应与重试，统一播放控制图标，支持从本地队列移除单条内容及恢复。删除当前播放
+当前版本为 `0.4.0`（Kotlin 版），已通过用户验收并合并发布到 `main`。原 13 个应用源文件与
+5 个测试文件已迁移为 Kotlin，保留原有包名、缓存格式、权限和播放链路。延续播放完成后的
+事件响应与重试优化、统一播放控制图标，支持从本地队列移除单条内容及恢复。删除当前播放
 条目会切到后续条目；暂停时删除不会自动开始播放。移除记录在刷新和重启后保留，
 不修改得到账号中的内容。
 
-该分支继续使用 Java。Kotlin 和 Java 都受 Android 相同的后台与电源管理约束，
-仅切换语言无法解决息屏暂停或播放器加载延迟。
+Kotlin 和 Java 都受 Android 相同的后台与电源管理约束，仅切换语言不能消除厂商冻结
+或官方播放器加载延迟。真机结果见 [Kotlin 验收记录](docs/kotlin-refactor-validation.md)。
 
-[下载 0.3.2 APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.3.2/knowledge-redpacket-companion-0.3.2.apk)
+本版修复刷新后停留在得到的问题：由得到前台确认页通过原生导航返回伴侣，首页复用
+现有实例。若当前得到版本不支持回跳，使用“红包已刷新”通知兜底；点击即可返回，
+红包结果已经保存，不必重复刷新。详见 [刷新回跳验证](docs/refresh-return-validation.md)。
+
+[下载 0.4.0 Kotlin APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.4.0/knowledge-redpacket-companion-0.4.0.apk)
 
 ## 构建与验证
 
 ```bash
 JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
-  gradle testDebugUnitTest assembleDebug lintDebug
+  ./gradlew testDebugUnitTest assembleDebug lintDebug
 ```
 
 调试 APK：`app/build/outputs/apk/debug/app-debug.apk`
+
+页面导航脚本回归：`node scripts/test-bridge-page.mjs`。
 
 ## 隐私与边界
 
