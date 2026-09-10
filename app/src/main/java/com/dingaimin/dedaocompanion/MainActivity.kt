@@ -655,6 +655,7 @@ class MainActivity : Activity() {
 
     private fun playDirect(item: RedPacketItem?, sequenceDirection: Int, continuousStart: Boolean) {
         if (item == null || item!!.audioId == null || item!!.audioId.isBlank()) return
+        PlaybackOwnership.request(this, item.title, liveOfficialTitle())
         switchingToTitle = item!!.title
         switchStartedAt = SystemClock.elapsedRealtime()
         nowPlayingState!!.setText(if (continuousStart) "正在开始连续播放…" else "正在切换…")
@@ -702,7 +703,11 @@ class MainActivity : Activity() {
         attempt: Int,
     ) {
         if (generation != directSkipGeneration) return
-        if (item.title == liveOfficialTitle()) {
+        if (PlaybackOwnership.releaseIfExternal(this, liveOfficialTitle())) return
+        if (
+            item.title == liveOfficialTitle() &&
+                dedaoController()?.playbackState?.state == PlaybackState.STATE_PLAYING
+        ) {
             switchingToTitle = ""
             setTransportEnabled(true)
             getSharedPreferences("page_probe", Context.MODE_PRIVATE)
@@ -730,10 +735,12 @@ class MainActivity : Activity() {
             return
         }
         if (attempt < 40) {
-            if (attempt == 24) {
+            if (item.title == liveOfficialTitle()) resumeOfficialPlayback()
+            if (attempt == 24 && item.title != liveOfficialTitle()) {
                 OfficialPlayerControl.open(this, item.audioId)
             }
-            if (attempt == 12) openOfficialContextFor(item, generation)
+            if (attempt == 12 && item.title != liveOfficialTitle())
+                openOfficialContextFor(item, generation)
             handler.postDelayed(
                 {
                     verifyDirectOpen(
@@ -784,6 +791,8 @@ class MainActivity : Activity() {
             handler.postDelayed(
                 {
                     if (generation == directSkipGeneration) {
+                        if (PlaybackOwnership.releaseIfExternal(this, liveOfficialTitle()))
+                            return@postDelayed
                         OfficialPlayerControl.open(this, item!!.audioId)
                     }
                 },
@@ -810,6 +819,7 @@ class MainActivity : Activity() {
     }
 
     private fun playTitleLegacy(title: String, sequenceDirection: Int) {
+        PlaybackOwnership.request(this, title, liveOfficialTitle())
         if (title != actualMediaTitle) {
             switchingToTitle = title
             switchStartedAt = SystemClock.elapsedRealtime()
@@ -909,6 +919,7 @@ class MainActivity : Activity() {
             getSharedPreferences("page_probe", Context.MODE_PRIVATE)
         probe.edit().remove("official_queue_failed_fingerprint").apply()
         val first: RedPacketItem = displayedItems.get(0)
+        PlaybackOwnership.request(this, first.title, liveOfficialTitle())
         if (first.audioId != null && !first.audioId.isBlank()) {
             playDirect(first, 1, true)
             return
@@ -2554,6 +2565,14 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        fun onExternalPlaybackSelected() {
+            val activity = visibleActivity.get() ?: return
+            ++activity.toggleGeneration
+            ++activity.monitorWaitGeneration
+            activity.pendingContinuousStart = false
+            activity.cancelPendingPlaybackSwitch()
+        }
+
         private var visibleActivity: WeakReference<MainActivity> = WeakReference<MainActivity>(null)
         private val ORANGE: Int = Color.rgb(255, 106, 42)
         private val INK: Int = Color.rgb(29, 31, 36)

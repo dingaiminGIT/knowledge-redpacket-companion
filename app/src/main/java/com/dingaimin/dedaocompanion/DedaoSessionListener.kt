@@ -118,6 +118,7 @@ class DedaoSessionListener : NotificationListenerService() {
         var openGeneration: Int = 0
         var transitionStartedAt: Long = 0
         var lastPlayRequestAt: Long = 0
+        var pauseGeneration: Int = 0
         val completionProbe: Runnable = Runnable({ this.pollCompletion() })
 
         init {
@@ -126,19 +127,37 @@ class DedaoSessionListener : NotificationListenerService() {
             this.playbackSeenForTitle =
                 (this.previousState != null &&
                     this.previousState!!.getState() == PlaybackState.STATE_PLAYING)
-            QueueStore.selectTitle(this@DedaoSessionListener, title(this.metadata))
+            if (
+                !PlaybackOwnership.releaseIfExternal(
+                    this@DedaoSessionListener,
+                    title(this.metadata),
+                )
+            ) {
+                QueueStore.selectTitle(this@DedaoSessionListener, title(this.metadata))
+            }
             observeState(this.previousState, "initial")
         }
 
         public override fun onMetadataChanged(metadata: MediaMetadata?) {
             val oldTitle: String = title(this.metadata)
-            val newTitle: String = title(metadata)
-            this.metadata = metadata
+            // Callbacks can be queued behind a newer controller snapshot. Never treat a stale
+            // payload as the user switching back to the old episode after our target opened.
+            val latestMetadata = controller.metadata
+            val newTitle: String = title(latestMetadata)
+            this.metadata = latestMetadata
+            if (PlaybackOwnership.releaseIfExternal(this@DedaoSessionListener, newTitle)) {
+                ++openGeneration
+                transitionStartedAt = 0L
+                completionHandled = false
+                playbackSeenForTitle = false
+                furthestPositionForTitle = 0L
+                handler.removeCallbacks(completionProbe)
+                return
+            }
             val probe: android.content.SharedPreferences =
                 getSharedPreferences("page_probe", Context.MODE_PRIVATE)
             val pendingTitle: String = probe.getString("direct_open_target_title", "") ?: ""
             val expectedItem: RedPacketItem? = QueueStore.current(this@DedaoSessionListener)
-            val oldItem: RedPacketItem? = QueueStore.findTitle(this@DedaoSessionListener, oldTitle)
             val newItem: RedPacketItem? = QueueStore.findTitle(this@DedaoSessionListener, newTitle)
             val queueActive: Boolean = probe.getBoolean("companion_queue_active", false)
             // Ignore intermediate metadata from the official queue while an explicit open is
@@ -155,13 +174,6 @@ class DedaoSessionListener : NotificationListenerService() {
                 QueueStore.selectTitle(this@DedaoSessionListener, newTitle)
                 probe.edit().putString("playback_monitor_status", "正在播放：" + newTitle).apply()
                 ensurePlaying()
-            } else if (
-                (queueActive && oldItem != null && newTitle != oldTitle && !newTitle.isBlank())
-            ) {
-                // 得到 may auto-advance its own unrelated queue. Re-align to the companion
-                // queue; accept the native transition only when it is exactly our next item.
-                QueueStore.selectTitle(this@DedaoSessionListener, oldTitle)
-                advanceFrom(oldItem!!.title, newTitle)
             } else if (queueActive && newItem != null && newTitle != oldTitle) {
                 QueueStore.selectTitle(this@DedaoSessionListener, newTitle)
                 probe.edit().putString("playback_monitor_status", "正在播放：" + newTitle).apply()
@@ -177,7 +189,7 @@ class DedaoSessionListener : NotificationListenerService() {
         }
 
         public override fun onPlaybackStateChanged(state: PlaybackState?) {
-            observeState(state, "callback")
+            observeExternalSignal("callback")
         }
 
         fun observeExternalSignal(source: String) {
@@ -191,6 +203,16 @@ class DedaoSessionListener : NotificationListenerService() {
         }
 
         private fun observeState(state: PlaybackState?, source: String) {
+            if (
+                PlaybackOwnership.releaseIfExternal(
+                    this@DedaoSessionListener,
+                    title(controller.metadata),
+                )
+            ) {
+                ++openGeneration
+                handler.removeCallbacks(completionProbe)
+                return
+            }
             if (state == null) {
                 scheduleCompletionProbe()
                 return
@@ -215,6 +237,7 @@ class DedaoSessionListener : NotificationListenerService() {
                 PlaybackCompletionPolicy.reachedEnd(furthestPositionForTitle, duration)
 
             if (current == PlaybackState.STATE_PLAYING) {
+                ++pauseGeneration
                 playbackSeenForTitle = true
             }
             if (current == PlaybackState.STATE_PLAYING && (!reachedEnd || position < 2_000L)) {
@@ -252,22 +275,7 @@ class DedaoSessionListener : NotificationListenerService() {
                 }
                 return
             }
-            if (
-                (current == PlaybackState.STATE_PLAYING &&
-                    probe.getBoolean("companion_queue_suspended", false) &&
-                    (("initial" == source ||
-                        oldState == null ||
-                        oldState!!.getState() != PlaybackState.STATE_PLAYING)) &&
-                    QueueStore.findTitle(this@DedaoSessionListener, title(metadata)) != null)
-            ) {
-                probe
-                    .edit()
-                    .putBoolean("companion_queue_suspended", false)
-                    .putBoolean("companion_queue_active", true)
-                    .apply()
-                PlaybackGuardService.start(this@DedaoSessionListener)
-                scheduleCompletionProbe()
-            }
+            // Only an explicit companion action resumes a suspended queue. Official play does not.
             if (
                 (current == PlaybackState.STATE_PAUSED &&
                     !reachedEnd &&
@@ -276,15 +284,30 @@ class DedaoSessionListener : NotificationListenerService() {
                         ((oldState != null &&
                             oldState!!.getState() == PlaybackState.STATE_PLAYING)))))
             ) {
-                probe
-                    .edit()
-                    .putBoolean("companion_queue_active", false)
-                    .putBoolean("companion_queue_suspended", true)
-                    .putString("playback_monitor_status", "连续播放已暂停")
-                    .apply()
-                ++openGeneration
-                PlaybackGuardService.stop(this@DedaoSessionListener)
-                handler.removeCallbacks(completionProbe)
+                val pause = ++pauseGeneration
+                // Official open can briefly report PAUSED while loading. Do not resume audio;
+                // only suspend ownership if it remains paused after this confirmation window.
+                handler.postDelayed(
+                    {
+                        if (
+                            pause != pauseGeneration ||
+                                controller.playbackState?.state != PlaybackState.STATE_PAUSED ||
+                                !probe.getBoolean("companion_queue_active", false) ||
+                                !probe.getString("direct_open_target_title", "").isNullOrBlank()
+                        )
+                            return@postDelayed
+                        probe
+                            .edit()
+                            .putBoolean("companion_queue_active", false)
+                            .putBoolean("companion_queue_suspended", true)
+                            .putString("playback_monitor_status", "连续播放已暂停")
+                            .apply()
+                        ++openGeneration
+                        PlaybackGuardService.stop(this@DedaoSessionListener)
+                        handler.removeCallbacks(completionProbe)
+                    },
+                    600L,
+                )
                 return
             }
             if (!playbackSeenForTitle || !terminalState || !reachedEnd || completionHandled) return
@@ -337,6 +360,8 @@ class DedaoSessionListener : NotificationListenerService() {
             recordTransition("completed")
             QueueStore.selectTitle(this@DedaoSessionListener, finishedTitle)
             val next: RedPacketItem? = QueueStore.advance(this@DedaoSessionListener)
+            if (next != null)
+                PlaybackOwnership.request(this@DedaoSessionListener, next.title, title(metadata))
             if (next != null && next!!.title == alreadyPlayingTitle) {
                 completionHandled = false
                 ensurePlaying()
@@ -397,6 +422,10 @@ class DedaoSessionListener : NotificationListenerService() {
                     )
                         return@postDelayed
                     val currentTitle: String = title(controller.getMetadata())
+                    if (
+                        PlaybackOwnership.releaseIfExternal(this@DedaoSessionListener, currentTitle)
+                    )
+                        return@postDelayed
                     if (item.title == currentTitle) {
                         val state: PlaybackState? = controller.getPlaybackState()
                         val playing: Boolean =
@@ -472,6 +501,7 @@ class DedaoSessionListener : NotificationListenerService() {
         }
 
         fun dispose() {
+            ++pauseGeneration
             handler.removeCallbacks(completionProbe)
             ++openGeneration
             controller.unregisterCallback(this)
