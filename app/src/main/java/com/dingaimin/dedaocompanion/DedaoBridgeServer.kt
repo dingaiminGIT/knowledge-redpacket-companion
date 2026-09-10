@@ -1,9 +1,7 @@
 package com.dingaimin.dedaocompanion
 
 import android.content.Context
-import android.content.Intent
 import android.content.SharedPreferences
-import android.net.Uri
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -231,32 +229,7 @@ class DedaoBridgeServer private constructor(private val context: Context) {
     }
 
     private fun returnToCompanion(success: Boolean) {
-        try {
-            DiagnosticReport.mark(
-                context,
-                "background_return_attempted",
-                if (success) "complete" else "failed",
-            )
-            val intent: Intent =
-                Intent(
-                    Intent.ACTION_VIEW,
-                    Uri.parse("dedaocompanion://bridge/" + (if (success) "complete" else "failed")),
-                )
-            intent.setPackage(context.getPackageName())
-            intent.addFlags(
-                (Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                    Intent.FLAG_ACTIVITY_NO_ANIMATION)
-            )
-            context.startActivity(intent)
-        } catch (error: Exception) {
-            DiagnosticReport.mark(
-                context,
-                "background_return_failed",
-                error.javaClass.getSimpleName(),
-            )
-        }
+        BridgeReturn.request(context, success)
     }
 
     @Throws(IOException::class)
@@ -328,12 +301,14 @@ class DedaoBridgeServer private constructor(private val context: Context) {
                 const load=(b,params)=>new Promise((resolve,reject)=>{let done=false;const timer=setTimeout(()=>{if(!done)reject(Error('request timeout'))},10000);
                   const message={sdkType:'network.load',seqid:'redpacket_'+Date.now()+'_'+Math.random(),data:{url:'${'$'}_ENTREE_DOMAIN_$/mustard-view/v1/red_packet/category/list',method:'POST',proxyType:'gateway/entree',contentType:'application/json',params}};
                   try{b.send(message,r=>{done=true;clearTimeout(timer);resolve(parse(r))})}catch(e){clearTimeout(timer);reject(e)}});
-                const showReturn=success=>{const href='dedaocompanion://bridge/'+(success?'complete':'failed'),a=document.getElementById('r');a.href=href;a.style.display='block';setTimeout(()=>{try{location.href=href}catch(e){}},250)};
+                const showReturn=success=>{const href='dedaocompanion://bridge/'+(success?'complete':'failed'),a=document.getElementById('r');a.href=href;a.style.display='block';
+                  const navigate=()=>{try{if(nativeBridge){nativeBridge.send({sdkType:'jump.universal',seqid:'redpacket_return_'+Date.now(),data:{type:'scheme',route:href}},()=>{});return}}catch(e){}try{location.href=href}catch(e){}};
+                  a.onclick=e=>{e.preventDefault();navigate()};setTimeout(navigate,250)};
                 const run=async()=>{try{await event('page_script_started');const b=await bridge();nativeBridge=b;await event('js_bridge_ready');document.getElementById('s').textContent='正在读取红包列表…';let max=0;for(let page=0;page<10;page++){const params={count:20,type:0};if(max>0)params.max_timestamp=max;
                     const response=await load(b,params);collect(response);const next=cursor(response);if(!more(response)||!next||next===max)break;max=next;}
                   await event('api_query_complete');document.getElementById('s').textContent='正在保存确认结果…';
                   const result=await fetch('/result/%NONCE%',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(out)});
-                  if(!result.ok)throw Error('no playable items');document.getElementById('s').textContent='确认完成，请返回伴侣应用';showReturn(true);
+                  if(!result.ok)throw Error('no playable items');document.getElementById('s').textContent='确认完成，正在返回伴侣。若未自动返回，请点击通知栏中的“红包已刷新”，或手动打开伴侣；结果已保存。';showReturn(true);
                 }catch(e){document.getElementById('s').textContent='确认失败，请返回伴侣应用重试';
                   try{await fetch('/result/%NONCE%',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"items":[],"examined":0}'})}catch(x){}
                   showReturn(false);}};run();})();

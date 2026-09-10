@@ -123,6 +123,8 @@ object DiagnosticReport {
         report.append("同步来源: ").append(probe.getString("scan_source", "-")).append('\n')
         report.append("同步状态: ").append(probe.getString("scan_status", "-")).append('\n')
         report.append("最后阶段: ").append(probe.getString("bridge_stage", "-")).append('\n')
+        report.append("等待回前台: ").append(probe.getBoolean("return_pending", false)).append('\n')
+        report.append("回跳通知: ").append(probe.getString("return_notice", "-")).append('\n')
         report.append("阶段详情: ").append(probe.getString("bridge_detail", "-")).append('\n')
         report.append("阶段距今: ").append(ageSeconds(now, stageAt)).append('\n')
         report.append("桥接保活: ").append(probe.getString("keepalive_status", "-")).append('\n')

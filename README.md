@@ -40,7 +40,7 @@
 
 ## 下载
 
-当前验收分支为 `codex/kotlin-refactor`（`0.4.0-kotlin-rc1`）。13 个应用源文件与
+当前验收分支为 `codex/kotlin-refactor`（`0.4.0-kotlin-rc2`）。原 13 个应用源文件与
 5 个测试文件已迁移为 Kotlin，保留原有包名、缓存格式、权限和播放链路。延续播放完成后的
 事件响应与重试优化、统一播放控制图标，支持从本地队列移除单条内容及恢复。删除当前播放
 条目会切到后续条目；暂停时删除不会自动开始播放。移除记录在刷新和重启后保留，
@@ -49,6 +49,10 @@
 测试包在此分支构建，验收通过前不合并 `main`，也不替换正式下载。
 Kotlin 和 Java 都受 Android 相同的后台与电源管理约束，仅切换语言不能消除厂商冻结
 或官方播放器加载延迟。真机结果见 [Kotlin 验收记录](docs/kotlin-refactor-validation.md)。
+
+RC2 修复刷新后停留在得到的问题：由得到前台确认页通过原生导航返回伴侣，首页复用
+现有实例。若当前得到版本不支持回跳，使用“红包已刷新”通知兜底；点击即可返回，
+红包结果已经保存，不必重复刷新。详见 [刷新回跳验证](docs/refresh-return-validation.md)。
 
 [下载 0.3.2 APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.3.2/knowledge-redpacket-companion-0.3.2.apk)
 
@@ -60,6 +64,8 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
 ```
 
 调试 APK：`app/build/outputs/apk/debug/app-debug.apk`
+
+页面导航脚本回归：`node scripts/test-bridge-page.mjs`。
 
 ## 隐私与边界
 

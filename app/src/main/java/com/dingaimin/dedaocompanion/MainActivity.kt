@@ -209,11 +209,7 @@ class MainActivity : Activity() {
             if (probe.getBoolean("scan_requested", false)) {
                 failPendingScan("确认页已返回，但没有收到完整结果")
             }
-            DiagnosticReport.mark(
-                this,
-                "companion_returned",
-                if (result == null) "unknown" else result,
-            )
+            if (resumed) BridgeReturn.onResumed(this)
             refreshCachedResults()
             if ("failed" == result && isAccessibilityEnabled) {
                 syncStatus!!.setText("接口确认未完成，正在使用兼容模式…")
@@ -573,6 +569,7 @@ class MainActivity : Activity() {
         autoSyncStarted = true
         val now: Long = System.currentTimeMillis()
         val attemptId: String = UUID.randomUUID().toString().substring(0, 8)
+        BridgeReturn.reset(this)
         getSharedPreferences("page_probe", Context.MODE_PRIVATE)
             .edit()
             .putBoolean("scan_requested", true)
@@ -2268,7 +2265,10 @@ class MainActivity : Activity() {
             else "请允许伴侣后台运行，并显示连续播放通知。若息屏后停止，请在应用信息中检查省电策略和系统的后台启动设置。允许后台运行可能增加耗电。"
         android.app.AlertDialog.Builder(this)
             .setTitle("连续播放设置")
-            .setMessage(guidance + "\n\n播放监控权限与显示通知权限相互独立；设置后仍建议息屏试听一次。")
+            .setMessage(
+                guidance +
+                    "\n\n刷新通过得到确认页自动返回。若当前得到版本不支持回跳，可点击“红包已刷新”通知或手动打开伴侣，结果已保存，不必反复刷新。\n\n播放监控权限与显示通知权限相互独立；设置后仍建议息屏试听一次。"
+            )
             .setPositiveButton("应用设置", { dialog, which -> openApplicationDetails() })
             .setNeutralButton("复制诊断", { dialog, which -> copyDiagnostics() })
             .setNegativeButton("关闭", null)
@@ -2496,6 +2496,7 @@ class MainActivity : Activity() {
     protected override fun onResume() {
         super.onResume()
         resumed = true
+        BridgeReturn.onResumed(this)
         if (isNotificationListenerEnabled) {
             DedaoSessionListener.ensureConnected(this)
             handler.postDelayed(
