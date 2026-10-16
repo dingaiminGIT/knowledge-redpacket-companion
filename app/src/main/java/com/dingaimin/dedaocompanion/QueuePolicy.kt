@@ -7,12 +7,15 @@ object QueuePolicy {
         course: String?,
         hideCompleted: Boolean,
         newestFirst: Boolean,
+        hideIgnored: Boolean = false,
+        ignoredKeys: Set<String> = emptySet(),
     ): List<RedPacketItem> {
         val selectedCourse = course?.takeUnless { it.isBlank() } ?: "全部课程"
         val filtered =
             source.orEmpty().filter {
                 (selectedCourse == "全部课程" || selectedCourse == it.course) &&
-                    (!hideCompleted || !it.completed)
+                    (!hideCompleted || !it.completed) &&
+                    (!hideIgnored || stableKey(it) !in ignoredKeys)
             }
         return if (newestFirst) filtered.sortedByDescending { it.claimedAtSeconds }
         else filtered.sortedBy { it.claimedAtSeconds }

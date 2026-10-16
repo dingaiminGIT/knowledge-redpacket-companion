@@ -80,6 +80,65 @@ class QueuePolicyTest {
     }
 
     @Test
+    fun ignoredItemsStayVisibleUntilHideIgnoredIsChecked() {
+        val ignoredKeys = setOf(QueuePolicy.stableKey(newest))
+        assertEquals(
+            listOf(newest, middle, oldest),
+            QueuePolicy.apply(source, "全部课程", false, true, false, ignoredKeys),
+        )
+        assertEquals(
+            listOf(middle, oldest),
+            QueuePolicy.apply(source, "全部课程", false, true, true, ignoredKeys),
+        )
+        assertEquals(listOf(oldest, newest, middle), source)
+    }
+
+    @Test
+    fun ignoredFilterComposesWithCourseCompletionAndCustomOrder() {
+        val ignoredKeys = setOf(QueuePolicy.stableKey(newest))
+        val filtered = QueuePolicy.apply(source, "课程甲", true, true, true, ignoredKeys)
+        assertEquals(
+            listOf(oldest),
+            QueuePolicy.applyCustomOrder(
+                filtered,
+                listOf(QueuePolicy.stableKey(newest), QueuePolicy.stableKey(oldest)),
+            ),
+        )
+        assertEquals(
+            listOf(oldest),
+            QueuePolicy.apply(source, "全部课程", true, false, true, ignoredKeys),
+        )
+    }
+
+    @Test
+    fun ignoredIdentitySurvivesRefreshAndDoesNotHideOtherItemsWithSameTitle() {
+        val ignoredKeys = setOf(QueuePolicy.stableKey(newest))
+        val refreshed = RedPacketItem(newest.id, newest.type, newest.course, "更新的标题", "", 40)
+        val sameTitle = RedPacketItem("另一个ID", 65, newest.course, newest.title, "", 50)
+        assertEquals(
+            listOf(sameTitle, oldest),
+            QueuePolicy.apply(listOf(oldest, refreshed, sameTitle), null, false, true, true, ignoredKeys),
+        )
+        assertEquals(
+            listOf(sameTitle, refreshed, oldest),
+            QueuePolicy.apply(listOf(oldest, refreshed, sameTitle), null, false, true, true, emptySet()),
+        )
+    }
+
+    @Test
+    fun ignoringAllItemsProducesAnEmptyQueueAndCanBeReversed() {
+        val ignoredKeys = source.map { QueuePolicy.stableKey(it) }.toSet()
+        assertEquals(
+            emptyList<RedPacketItem>(),
+            QueuePolicy.apply(source, null, false, true, true, ignoredKeys),
+        )
+        assertEquals(
+            listOf(newest, middle, oldest),
+            QueuePolicy.apply(source, null, false, true, false, ignoredKeys),
+        )
+    }
+
+    @Test
     fun customOrderOverridesClaimTimeOrder() {
         val sorted: List<RedPacketItem> = QueuePolicy.apply(source, "全部课程", false, true)
         val result: List<RedPacketItem> =

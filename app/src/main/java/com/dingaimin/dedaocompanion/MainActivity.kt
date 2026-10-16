@@ -74,6 +74,7 @@ class MainActivity : Activity() {
     private var sortOrder: Spinner? = null
     private var courseFilter: Spinner? = null
     private var hideCompletedFilter: CheckBox? = null
+    private var hideIgnoredFilter: CheckBox? = null
     private var primaryAction: Button? = null
     private var refreshAction: Button? = null
     private var diagnosticAction: Button? = null
@@ -268,6 +269,16 @@ class MainActivity : Activity() {
                 submitted = hideCompletedFilter != null
                 if (submitted) hideCompletedFilter!!.setChecked(false)
             }
+            "hide_ignored_on" -> hideIgnoredFilter!!.setChecked(true)
+            "hide_ignored_off" -> hideIgnoredFilter!!.setChecked(false)
+            "ignore_first" -> {
+                submitted = displayedItems.isNotEmpty()
+                if (submitted) setItemIgnored(displayedItems.first(), true)
+            }
+            "unignore_first" -> {
+                submitted = displayedItems.isNotEmpty()
+                if (submitted) setItemIgnored(displayedItems.first(), false)
+            }
             "rapid_toggle" -> {
                 playPauseAction!!.performClick()
                 handler.postDelayed(Runnable({ playPauseAction!!.performClick() }), 120)
@@ -455,6 +466,28 @@ class MainActivity : Activity() {
         completedRow.setGravity(Gravity.END or Gravity.CENTER_VERTICAL)
         completedRow.addView(
             hideCompletedFilter,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)),
+        )
+        hideIgnoredFilter = CheckBox(this)
+        hideIgnoredFilter!!.setText("隐藏已忽略")
+        hideIgnoredFilter!!.setTextSize(13f)
+        hideIgnoredFilter!!.setTextColor(INK)
+        hideIgnoredFilter!!.setButtonTintList(ColorStateList.valueOf(ORANGE))
+        hideIgnoredFilter!!.setGravity(Gravity.CENTER_VERTICAL)
+        hideIgnoredFilter!!.setPadding(dp(4), 0, dp(14), 0)
+        hideIgnoredFilter!!.setChecked(
+            getSharedPreferences("ui_preferences", Context.MODE_PRIVATE)
+                .getBoolean("hide_ignored", false)
+        )
+        hideIgnoredFilter!!.setOnCheckedChangeListener({ _, checked ->
+            getSharedPreferences("ui_preferences", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("hide_ignored", checked)
+                .apply()
+            applyFilters()
+        })
+        completedRow.addView(
+            hideIgnoredFilter,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)),
         )
         root.addView(
@@ -1441,6 +1474,8 @@ class MainActivity : Activity() {
                 selectedCourse,
                 hideCompletedFilter != null && hideCompletedFilter!!.isChecked(),
                 orderPosition != 1,
+                hideIgnoredFilter?.isChecked == true,
+                ignoredItemKeys(),
             )
         if (orderPosition == 2) {
             filtered = QueuePolicy.applyCustomOrder(filtered, loadCustomQueueOrder())
@@ -1491,6 +1526,7 @@ class MainActivity : Activity() {
         count.setPadding(dp(16), dp(10), dp(16), dp(9))
         list!!.addView(count, matchWrap())
         val current: RedPacketItem? = QueueStore.current(this)
+        val ignoredKeys: Set<String> = ignoredItemKeys()
         var groupCourse: String? = null
         var group: LinearLayout? = null
         for (i: Int in displayedItems.indices) {
@@ -1544,16 +1580,42 @@ class MainActivity : Activity() {
             itemTitle.setLineSpacing(0f, 1.08f)
             itemTitle.setMaxLines(2)
             itemTitle.setEllipsize(TextUtils.TruncateAt.END)
-            val learningState: String = if (item.completed) "已学完" else "红包有效"
-            val meta: TextView =
+            val ignored: Boolean = QueuePolicy.stableKey(item) in ignoredKeys
+            val learningState: String =
+                (if (ignored) "已忽略  ·  " else "") + item.validityLabel()
+            val metaRow: LinearLayout = LinearLayout(this)
+            metaRow.setGravity(Gravity.CENTER_VERTICAL)
+            val validity: TextView =
                 text(
-                    if (selected) learningState + "  ·  当前播放" else learningState + "  ·  点击播放",
+                    learningState,
                     11,
                     if (selected) ORANGE else MUTED,
                     if (selected) Typeface.BOLD else Typeface.NORMAL,
                 )
+            validity.setSingleLine(true)
+            validity.setEllipsize(TextUtils.TruncateAt.END)
+            val playHint: TextView =
+                text(
+                    if (selected) "当前播放" else "点击播放",
+                    11,
+                    if (selected) ORANGE else MUTED,
+                    if (selected) Typeface.BOLD else Typeface.NORMAL,
+                )
+            playHint.setGravity(Gravity.END)
+            playHint.setPadding(dp(12), 0, 0, 0)
+            metaRow.addView(
+                validity,
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            metaRow.addView(
+                playHint,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
             copy.addView(itemTitle, matchWrap())
-            copy.addView(meta, matchWrap())
+            copy.addView(metaRow, matchWrap())
             row.addView(copy, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
             val play: ImageView = ImageView(this)
@@ -1566,6 +1628,17 @@ class MainActivity : Activity() {
                 renderItems()
                 playTitle(item.title)
             })
+            val ignore: Button = compactButton(
+                if (ignored) "取消忽略" else "忽略",
+                { setItemIgnored(item, !ignored) },
+                false,
+            )
+            ignore.setTextSize(11f)
+            ignore.setPadding(0, 0, 0, 0)
+            ignore.setTextColor(if (ignored) ORANGE else MUTED)
+            ignore.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT))
+            ignore.setContentDescription((if (ignored) "取消忽略 " else "忽略 ") + item.title)
+            row.addView(ignore, LinearLayout.LayoutParams(dp(64), dp(48)))
             episodeRows.add(row)
             if (group != null)
                 group!!.addView(
@@ -1969,6 +2042,7 @@ class MainActivity : Activity() {
             )
             holder.meta.setText(
                 ((if (item.course.isBlank()) "未识别课程" else item.course) +
+                    (if (QueuePolicy.stableKey(item) in ignoredItemKeys()) "  ·  已忽略" else "") +
                     (if (selected) "  ·  当前条目" else ""))
             )
             holder.meta.setTextColor(if (selected) ORANGE else MUTED)
@@ -2028,7 +2102,33 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun removeQueueItem(removed: RedPacketItem) {
+    private fun ignoredItemKeys(): MutableSet<String> =
+        LinkedHashSet(
+            getSharedPreferences("ui_preferences", Context.MODE_PRIVATE)
+                .getStringSet("ignored_item_keys", emptySet()) ?: emptySet()
+        )
+
+    private fun setItemIgnored(item: RedPacketItem, ignored: Boolean) {
+        if (ignored && hideIgnoredFilter?.isChecked == true) {
+            removeQueueItem(item, ignore = true)
+            return
+        }
+        val keys = ignoredItemKeys()
+        if (ignored) keys.add(QueuePolicy.stableKey(item))
+        else keys.remove(QueuePolicy.stableKey(item))
+        getSharedPreferences("ui_preferences", Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet("ignored_item_keys", keys)
+            .apply()
+        applyFilters()
+        Toast.makeText(
+            this,
+            if (ignored) "已忽略，勾选“隐藏已忽略”可隐藏" else "已取消忽略",
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    private fun removeQueueItem(removed: RedPacketItem, ignore: Boolean = false) {
         var removedIndex: Int = -1
         for (i: Int in displayedItems.indices) {
             if (QueuePolicy.stableKey(removed) == QueuePolicy.stableKey(displayedItems.get(i))) {
@@ -2059,11 +2159,11 @@ class MainActivity : Activity() {
             cancelPendingPlaybackSwitch()
             probe.edit().remove("direct_open_target_title").apply()
         }
-        val removedKeys: MutableSet<String> = removedQueueKeys()
+        val removedKeys: MutableSet<String> = if (ignore) ignoredItemKeys() else removedQueueKeys()
         removedKeys.add(QueuePolicy.stableKey(removed))
         getSharedPreferences("ui_preferences", Context.MODE_PRIVATE)
             .edit()
-            .putStringSet("removed_queue_keys", removedKeys)
+            .putStringSet(if (ignore) "ignored_item_keys" else "removed_queue_keys", removedKeys)
             .apply()
         applyFilters()
         QueueStore.save(this, displayedItems, Math.max(0, nextIndex))
@@ -2091,7 +2191,12 @@ class MainActivity : Activity() {
             }
         }
         updateNowPlaying()
-        Toast.makeText(this, "已移出播放列表，可在列表底部恢复", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            this,
+            if (ignore) "已忽略，取消勾选“隐藏已忽略”可查看和恢复"
+            else "已移出播放列表，可在列表底部恢复",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     private fun persistEditedQueueOrder(reorderedVisibleItems: List<RedPacketItem>?) {
@@ -2164,13 +2269,7 @@ class MainActivity : Activity() {
             ("bridge_failed" == source || "accessibility_fallback" == source)
         val monitorConnected: Boolean = listener && DedaoSessionListener.isConnected
         val backgroundRestricted: Boolean = isBackgroundRestricted
-        val notifications: android.app.NotificationManager? =
-            getSystemService<android.app.NotificationManager>(
-                android.app.NotificationManager::class.java
-            )
-        val notificationsDisabled: Boolean =
-            notifications != null && !notifications!!.areNotificationsEnabled()
-        if (listener && !monitorConnected && !backgroundRestricted && !notificationsDisabled) {
+        if (listener && !monitorConnected && !backgroundRestricted) {
             // The authorization is still valid. Rebinding is an internal recovery detail and
             // should stay silent instead of looking like another permission request.
             permissionCard!!.setVisibility(View.GONE)
@@ -2179,16 +2278,14 @@ class MainActivity : Activity() {
         if (
             monitorConnected &&
                 (!needsFallback || accessibility) &&
-                !backgroundRestricted &&
-                !notificationsDisabled
+                !backgroundRestricted
         ) {
             permissionCard!!.setVisibility(View.GONE)
             return
         }
         permissionCard!!.setVisibility(View.VISIBLE)
         val permissionTitle: String =
-            if (notificationsDisabled && listener) "显示连续播放通知"
-            else if (backgroundRestricted) "允许后台连续播放"
+            if (backgroundRestricted) "允许后台连续播放"
             else
                 (if (!listener) "开启连续播放权限"
                 else (if (!monitorConnected) "正在恢复连续播放监控" else "可选：开启兼容模式"))
@@ -2207,15 +2304,6 @@ class MainActivity : Activity() {
                     },
                     false,
                 ),
-                matchWrap(),
-            )
-        } else if (notificationsDisabled) {
-            val copy: TextView =
-                text("允许显示连续播放的常驻状态。通知权限与“播放监控”是两个独立授权；拒绝后仍可操作播放。", 12, MUTED, Typeface.NORMAL)
-            copy.setPadding(0, dp(4), 0, dp(8))
-            permissionCard!!.addView(copy, matchWrap())
-            permissionCard!!.addView(
-                compactButton("允许播放通知", { v -> requestPlaybackNotifications() }, false),
                 matchWrap(),
             )
         } else if (backgroundRestricted) {

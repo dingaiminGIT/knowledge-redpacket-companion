@@ -11,6 +11,7 @@ class RedPacketItem(
     val audioId: String,
     val claimedAtSeconds: Long,
     val completed: Boolean,
+    val expiresOn: String = "",
 ) {
 
     constructor(
@@ -43,9 +44,16 @@ class RedPacketItem(
             value.put("audioId", audioId)
             value.put("claimedAt", claimedAtSeconds)
             value.put("completed", completed)
+            value.put("expiresOn", expiresOn)
         } catch (ignored: Exception) {}
 
         return value
+    }
+
+    fun validityLabel(): String {
+        val state: String = if (completed) "已学完" else "红包有效"
+        if (expiresOn.isBlank()) return state
+        return if (completed) "$state  ·  ${expiresOn}过期" else "${state}至 $expiresOn"
     }
 
     companion object {
@@ -94,6 +102,7 @@ class RedPacketItem(
                 value.optString("audioId"),
                 value.optLong("claimedAt"),
                 value.optBoolean("completed", false),
+                value.optString("expiresOn"),
             )
         }
 

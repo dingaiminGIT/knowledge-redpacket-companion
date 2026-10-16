@@ -181,6 +181,7 @@ class DedaoBridgeServer private constructor(private val context: Context) {
                         audioId,
                         Math.max(0L, raw!!.optLong("claimedAt")),
                         raw!!.optBoolean("completed", false),
+                        clean(raw!!.optString("expiresOn"), 40),
                     )
                 stored.put(item.toJson())
                 i++
@@ -287,6 +288,7 @@ class DedaoBridgeServer private constructor(private val context: Context) {
                 const event=stage=>fetch('/event/%NONCE%?stage='+stage,{cache:'no-store'}).catch(()=>{});
                 const parse=v=>{if(typeof v==='string'){try{return JSON.parse(v)}catch(e){return v}}return v};
                 const walk=(v,fn,depth=0)=>{v=parse(v);if(!v||depth>12)return;if(Array.isArray(v)){v.forEach(x=>walk(x,fn,depth+1));return}if(typeof v==='object'){fn(v);Object.keys(v).forEach(k=>walk(v[k],fn,depth+1))}};
+                const expiry=response=>{let value='';walk(response,o=>{if(!value&&typeof o.red_packet_expire_day==='string')value=o.red_packet_expire_day.trim()});return value};
                 const collect=response=>{walk(response,o=>{if(!o.authority_intro||typeof o.authority_intro.red_packet_rights!=='boolean')return;out.examined++;
                   if(o.authority_intro.red_packet_rights!==true)return;const a=o.is_article_collection&&o.article_item?o.article_item:o;
                   const resource=a.resource||{},audio=String(resource.audio_id||'').trim(),id=String(a.id||a.product_id||'').trim(),title=String(a.product_title||a.title||'').trim();
@@ -294,18 +296,22 @@ class DedaoBridgeServer private constructor(private val context: Context) {
                   const progress=(a.progress_intro||o.progress_intro||{}).progress;
                   out.items.push({hasRights:true,id,type:Number(a.product_type||o.product_type||0),course:String(o.product_title||o.title||''),title,
                     deepLink:String(a.dd_url||a.ddurl||o.dd_url||o.ddurl||''),audioId:audio,claimedAt:Number(o.collection_timestamp||0),
-                    completed:a.is_finished===1||o.is_finished===1||Number(progress)>=100});});};
+                    completed:a.is_finished===1||o.is_finished===1||Number(progress)>=100,
+                    parentId:Number(o.product_id||o.id||0),parentType:Number(o.product_type||0),expiresOn:''});});};
                 const more=response=>{let yes=false;walk(response,o=>{if(o.is_more===true||o.is_more===1)yes=true});return yes};
                 const cursor=response=>{let value=0;walk(response,o=>{const n=Number(o.collection_timestamp||0);if(n>0&&(value===0||n<value))value=n});return value};
                 const bridge=()=>new Promise((resolve,reject)=>{let tries=0;const ready=()=>{if(window.WebViewJavascriptBridge)return resolve(window.WebViewJavascriptBridge);if(++tries>80)return reject(Error('bridge unavailable'));setTimeout(ready,100)};ready()});
-                const load=(b,params)=>new Promise((resolve,reject)=>{let done=false;const timer=setTimeout(()=>{if(!done)reject(Error('request timeout'))},10000);
-                  const message={sdkType:'network.load',seqid:'redpacket_'+Date.now()+'_'+Math.random(),data:{url:'${'$'}_ENTREE_DOMAIN_$/mustard-view/v1/red_packet/category/list',method:'POST',proxyType:'gateway/entree',contentType:'application/json',params}};
+                const load=(b,params,path='/mustard-view/v1/red_packet/category/list')=>new Promise((resolve,reject)=>{let done=false;const timer=setTimeout(()=>{if(!done)reject(Error('request timeout'))},10000);
+                  const message={sdkType:'network.load',seqid:'redpacket_'+Date.now()+'_'+Math.random(),data:{url:'${'$'}_ENTREE_DOMAIN_$'+path,method:'POST',proxyType:'gateway/entree',contentType:'application/json',params}};
                   try{b.send(message,r=>{done=true;clearTimeout(timer);resolve(parse(r))})}catch(e){clearTimeout(timer);reject(e)}});
+                const enrich=async b=>{let next=0;const worker=async()=>{while(next<out.items.length){const item=out.items[next++];try{if(item.parentId>0&&item.parentType>0){const response=await load(b,{article_id:Number(item.id),pid:item.parentId,ptype:item.parentType},'/bauhinia/v1/class/player/info');item.expiresOn=expiry(response)}}catch(e){}delete item.parentId;delete item.parentType}};
+                  const workers=[];for(let i=0;i<Math.min(6,out.items.length);i++)workers.push(worker());await Promise.all(workers)};
                 const showReturn=success=>{const href='dedaocompanion://bridge/'+(success?'complete':'failed'),a=document.getElementById('r');a.href=href;a.style.display='block';
                   const navigate=()=>{try{if(nativeBridge){nativeBridge.send({sdkType:'jump.universal',seqid:'redpacket_return_'+Date.now(),data:{type:'scheme',route:href}},()=>{});return}}catch(e){}try{location.href=href}catch(e){}};
                   a.onclick=e=>{e.preventDefault();navigate()};setTimeout(navigate,250)};
                 const run=async()=>{try{await event('page_script_started');const b=await bridge();nativeBridge=b;await event('js_bridge_ready');document.getElementById('s').textContent='正在读取红包列表…';let max=0;for(let page=0;page<10;page++){const params={count:20,type:0};if(max>0)params.max_timestamp=max;
                     const response=await load(b,params);collect(response);const next=cursor(response);if(!more(response)||!next||next===max)break;max=next;}
+                  document.getElementById('s').textContent='正在读取红包有效期…';const keepalive=setInterval(()=>event('expiry_query_active'),8000);await enrich(b);clearInterval(keepalive);
                   await event('api_query_complete');document.getElementById('s').textContent='正在保存确认结果…';
                   const result=await fetch('/result/%NONCE%',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(out)});
                   if(!result.ok)throw Error('no playable items');document.getElementById('s').textContent='确认完成，正在返回伴侣。若未自动返回，请点击通知栏中的“红包已刷新”，或手动打开伴侣；结果已保存。';showReturn(true);
