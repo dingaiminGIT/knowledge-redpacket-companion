@@ -8,6 +8,7 @@ import org.junit.Test
 class PlaybackCompletionPolicyTest {
     @Test
     fun acceptsTerminalSampleWithinThreeSecondsOfEnd() {
+        assertTrue(PlaybackCompletionPolicy.reachedEnd(712_000L, 713_000L))
         assertTrue(PlaybackCompletionPolicy.reachedEnd(717_000L, 718_000L))
         assertTrue(PlaybackCompletionPolicy.reachedEnd(715_000L, 718_000L))
     }

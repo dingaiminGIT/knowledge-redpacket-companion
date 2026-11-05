@@ -81,6 +81,12 @@ object DiagnosticReport {
             .append(if (probe.getBoolean("companion_queue_active", false)) "运行中" else "未运行")
             .append('\n')
         report.append("连续播放守护: ").append(probe.getString("playback_guard_status", "-")).append('\n')
+        report.append("最近监控暂停: ").append(time(probe.getLong("playback_monitor_paused_at", 0L))).append('\n')
+        report.append("暂停时进度(ms): ")
+            .append(probe.getLong("playback_monitor_pause_position", -1L)).append(" / ")
+            .append(probe.getLong("playback_monitor_pause_duration", -1L)).append('\n')
+        report.append("暂停采样来源: ").append(probe.getString("playback_monitor_pause_source", "-")).append('\n')
+        report.append("同条恢复监控: ").append(time(probe.getLong("playback_monitor_resumed_at", 0L))).append('\n')
         val notifications: android.app.NotificationManager? =
             context.getSystemService<android.app.NotificationManager>(
                 android.app.NotificationManager::class.java

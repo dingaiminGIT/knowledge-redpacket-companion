@@ -13,6 +13,7 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -33,6 +34,9 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewConfiguration
+import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.Window
 import android.view.WindowManager
 import android.widget.ArrayAdapter
@@ -43,6 +47,7 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
@@ -65,6 +70,12 @@ class MainActivity : Activity() {
     private val displayedItems: ArrayList<RedPacketItem> = ArrayList<RedPacketItem>()
     private val episodeRows: ArrayList<View> = ArrayList<View>()
     private val handler: Handler = Handler(Looper.getMainLooper())
+    private var revealedItem: SwipeRevealLayout? = null
+    private var dismissRevealTap = false
+    private var revealDownX = 0f
+    private var revealDownY = 0f
+    private var ignoreFeedback: LinearLayout? = null
+    private val hideIgnoreFeedback = Runnable { ignoreFeedback?.visibility = View.GONE }
 
     private var syncStatus: TextView? = null
     private var syncBanner: LinearLayout? = null
@@ -509,6 +520,17 @@ class MainActivity : Activity() {
             ),
         )
         root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        ignoreFeedback = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, dp(4), 0)
+            background = roundRect(SOFT_ORANGE, 10)
+            visibility = View.GONE
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        val feedbackParams = matchWrap()
+        feedbackParams.setMargins(dp(14), dp(4), dp(14), 0)
+        root.addView(ignoreFeedback, feedbackParams)
 
         primaryAction = compactButton("连续播放  ·  2 条", { v -> startContinuousPlayback() }, true)
         primaryAction!!.setTextSize(14f)
@@ -1313,6 +1335,7 @@ class MainActivity : Activity() {
         val wasActive: Boolean = probe.getBoolean("companion_queue_active", false)
         probe
             .edit()
+            .remove("companion_resume_title")
             .putBoolean("companion_queue_active", false)
             .putBoolean(
                 "companion_queue_suspended",
@@ -1329,6 +1352,7 @@ class MainActivity : Activity() {
         if (!probe.getBoolean("companion_queue_suspended", false)) return
         probe
             .edit()
+            .remove("companion_resume_title")
             .putBoolean("companion_queue_suspended", false)
             .putBoolean("companion_queue_active", true)
             .putLong("playback_monitor_last_playing_at", System.currentTimeMillis())
@@ -1514,6 +1538,8 @@ class MainActivity : Activity() {
     }
 
     private fun renderItems() {
+        revealedItem?.close()
+        revealedItem = null
         list!!.removeAllViews()
         episodeRows.clear()
         if (displayedItems.isEmpty()) {
@@ -1525,6 +1551,13 @@ class MainActivity : Activity() {
         val count: TextView = text("有效内容  ·  " + displayedItems.size + " 条", 14, INK, Typeface.BOLD)
         count.setPadding(dp(16), dp(10), dp(16), dp(9))
         list!!.addView(count, matchWrap())
+        if (!getSharedPreferences("ui_preferences", Context.MODE_PRIVATE)
+                .getBoolean("item_actions_discovered", false)) {
+            val itemActionsHint = text("左滑或长按内容可忽略", 12, MUTED, Typeface.NORMAL).apply {
+                setPadding(dp(16), 0, dp(16), dp(8))
+            }
+            list!!.addView(itemActionsHint, matchWrap())
+        }
         val current: RedPacketItem? = QueueStore.current(this)
         val ignoredKeys: Set<String> = ignoredItemKeys()
         var groupCourse: String? = null
@@ -1618,31 +1651,66 @@ class MainActivity : Activity() {
             copy.addView(metaRow, matchWrap())
             row.addView(copy, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
-            val play: ImageView = ImageView(this)
-            play.setImageResource(android.R.drawable.ic_media_play)
-            play.setColorFilter(if (selected) ORANGE else MUTED)
-            play.setContentDescription("播放 " + item.title)
-            row.addView(play, LinearLayout.LayoutParams(dp(30), dp(30)))
-            row.setOnClickListener({ v ->
-                QueueStore.save(this, displayedItems, index)
-                renderItems()
-                playTitle(item.title)
-            })
+            lateinit var swipeRow: SwipeRevealLayout
+            val playItem = View.OnClickListener {
+                if (!swipeRow.closeIfRevealed()) {
+                    QueueStore.save(this, displayedItems, index)
+                    renderItems()
+                    playTitle(item.title)
+                }
+            }
+            val play = mediaButton("播放 " + item.title, MediaIcon.Kind.PLAY, playItem, false)
+            play.setImageDrawable(MediaIcon(MediaIcon.Kind.PLAY, if (selected) ORANGE else MUTED, dp(24)))
+            row.addView(play, LinearLayout.LayoutParams(dp(48), dp(48)))
+            row.setOnClickListener(playItem)
+            val manageItem = View.OnLongClickListener {
+                swipeRow.close()
+                showItemActions(row, item)
+                true
+            }
+            row.setOnLongClickListener(manageItem)
+            play.setOnLongClickListener(manageItem)
             val ignore: Button = compactButton(
                 if (ignored) "取消忽略" else "忽略",
                 { setItemIgnored(item, !ignored) },
                 false,
             )
-            ignore.setTextSize(11f)
+            ignore.setTextSize(13f)
             ignore.setPadding(0, 0, 0, 0)
-            ignore.setTextColor(if (ignored) ORANGE else MUTED)
-            ignore.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT))
+            ignore.setTextColor(ORANGE)
+            ignore.setBackgroundTintList(ColorStateList.valueOf(SOFT_ORANGE))
             ignore.setContentDescription((if (ignored) "取消忽略 " else "忽略 ") + item.title)
-            row.addView(ignore, LinearLayout.LayoutParams(dp(64), dp(48)))
+            swipeRow = SwipeRevealLayout(
+                this,
+                row,
+                ignore,
+                { opened ->
+                    if (revealedItem !== opened) revealedItem?.close()
+                    revealedItem = opened
+                    markItemActionsDiscovered()
+                },
+                { closed -> if (revealedItem === closed) revealedItem = null },
+            )
+            row.setAccessibilityDelegate(object : View.AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.addAction(AccessibilityNodeInfo.AccessibilityAction(
+                        R.id.item_ignore_action, if (ignored) "取消忽略" else "忽略",
+                    ))
+                }
+
+                override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
+                    if (action == R.id.item_ignore_action) {
+                        setItemIgnored(item, !ignored)
+                        return true
+                    }
+                    return super.performAccessibilityAction(host, action, args)
+                }
+            })
             episodeRows.add(row)
             if (group != null)
                 group!!.addView(
-                    row,
+                    swipeRow,
                     LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(84)),
                 )
             val nextSameCourse: Boolean =
@@ -2108,9 +2176,51 @@ class MainActivity : Activity() {
                 .getStringSet("ignored_item_keys", emptySet()) ?: emptySet()
         )
 
-    private fun setItemIgnored(item: RedPacketItem, ignored: Boolean) {
+    private fun markItemActionsDiscovered() {
+        getSharedPreferences("ui_preferences", Context.MODE_PRIVATE).edit()
+            .putBoolean("item_actions_discovered", true).apply()
+    }
+
+    private fun showItemActions(anchor: View, item: RedPacketItem) {
+        markItemActionsDiscovered()
+        val ignored = QueuePolicy.stableKey(item) in ignoredItemKeys()
+        PopupMenu(this, anchor).apply {
+            menu.add(if (ignored) "取消忽略" else "忽略").setOnMenuItemClickListener {
+                setItemIgnored(item, !ignored)
+                true
+            }
+            show()
+        }
+    }
+
+    private fun showIgnoreFeedback(item: RedPacketItem, ignored: Boolean) {
+        val bar = ignoreFeedback ?: return
+        handler.removeCallbacks(hideIgnoreFeedback)
+        bar.removeAllViews()
+        bar.addView(
+            text(if (ignored) "已忽略" else "已取消忽略", 14, INK, Typeface.NORMAL),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        val undo = compactButton("撤销", {
+            handler.removeCallbacks(hideIgnoreFeedback)
+            bar.visibility = View.GONE
+            setItemIgnored(item, !ignored, allowUndo = false)
+        }, false)
+        undo.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT))
+        bar.addView(undo, LinearLayout.LayoutParams(dp(72), dp(48)))
+        bar.visibility = View.VISIBLE
+        val accessibility = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        val timeout = if (Build.VERSION.SDK_INT >= 29) accessibility.getRecommendedTimeoutMillis(
+            8_000, AccessibilityManager.FLAG_CONTENT_TEXT or AccessibilityManager.FLAG_CONTENT_CONTROLS,
+        ) else 8_000
+        handler.postDelayed(hideIgnoreFeedback, timeout.toLong())
+    }
+
+    private fun setItemIgnored(item: RedPacketItem, ignored: Boolean, allowUndo: Boolean = true) {
+        if ((QueuePolicy.stableKey(item) in ignoredItemKeys()) == ignored) return
         if (ignored && hideIgnoredFilter?.isChecked == true) {
             removeQueueItem(item, ignore = true)
+            if (allowUndo) showIgnoreFeedback(item, ignored)
             return
         }
         val keys = ignoredItemKeys()
@@ -2121,11 +2231,7 @@ class MainActivity : Activity() {
             .putStringSet("ignored_item_keys", keys)
             .apply()
         applyFilters()
-        Toast.makeText(
-            this,
-            if (ignored) "已忽略，勾选“隐藏已忽略”可隐藏" else "已取消忽略",
-            Toast.LENGTH_SHORT,
-        ).show()
+        if (allowUndo) showIgnoreFeedback(item, ignored)
     }
 
     private fun removeQueueItem(removed: RedPacketItem, ignore: Boolean = false) {
@@ -2191,11 +2297,8 @@ class MainActivity : Activity() {
             }
         }
         updateNowPlaying()
-        Toast.makeText(
-            this,
-            if (ignore) "已忽略，取消勾选“隐藏已忽略”可查看和恢复"
-            else "已移出播放列表，可在列表底部恢复",
-            Toast.LENGTH_SHORT,
+        if (!ignore) Toast.makeText(
+            this, "已移出播放列表，可在列表底部恢复", Toast.LENGTH_SHORT,
         ).show()
     }
 
@@ -2592,6 +2695,35 @@ class MainActivity : Activity() {
         handleIntent(intent)
     }
 
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            dismissRevealTap = false
+            revealDownX = event.rawX
+            revealDownY = event.rawY
+            revealedItem?.let { opened ->
+                val bounds = Rect()
+                opened.getGlobalVisibleRect(bounds)
+                if (!bounds.contains(event.rawX.toInt(), event.rawY.toInt())) {
+                    opened.close()
+                    dismissRevealTap = true
+                }
+            }
+        } else if (event.actionMasked == MotionEvent.ACTION_MOVE) {
+            val slop = ViewConfiguration.get(this).scaledTouchSlop
+            if (kotlin.math.abs(event.rawX - revealDownX) > slop ||
+                kotlin.math.abs(event.rawY - revealDownY) > slop) dismissRevealTap = false
+        } else if (event.actionMasked == MotionEvent.ACTION_UP && dismissRevealTap) {
+            // The first outside tap closes the actions without playing a different row.
+            val cancel = MotionEvent.obtain(event)
+            cancel.action = MotionEvent.ACTION_CANCEL
+            super.dispatchTouchEvent(cancel)
+            cancel.recycle()
+            dismissRevealTap = false
+            return true
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
     protected override fun onResume() {
         super.onResume()
         resumed = true
@@ -2641,6 +2773,7 @@ class MainActivity : Activity() {
     }
 
     protected override fun onPause() {
+        revealedItem?.close()
         resumed = false
         handler.removeCallbacks(mediaPoll)
         super.onPause()

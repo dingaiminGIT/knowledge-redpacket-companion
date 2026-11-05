@@ -7,6 +7,7 @@ object PlaybackOwnership {
         context
             .getSharedPreferences("page_probe", Context.MODE_PRIVATE)
             .edit()
+            .remove("companion_resume_title")
             .putString("companion_owned_title", target)
             .putString("direct_open_target_title", target)
             .putBoolean("direct_open_target_seen", false)
@@ -44,6 +45,7 @@ object PlaybackOwnership {
             .putBoolean("companion_queue_active", false)
             .putBoolean("companion_queue_suspended", false)
             .remove("companion_owned_title")
+            .remove("companion_resume_title")
             .remove("direct_open_target_title")
             .remove("direct_open_previous_title")
             .putString("playback_monitor_status", "已让出播放控制，请在伴侣中主动重新开始连续播放")

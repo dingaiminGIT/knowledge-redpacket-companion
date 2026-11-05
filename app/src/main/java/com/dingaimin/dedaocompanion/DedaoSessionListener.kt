@@ -235,10 +235,32 @@ class DedaoSessionListener : NotificationListenerService() {
                     current == PlaybackState.STATE_ERROR)
             val reachedEnd: Boolean =
                 PlaybackCompletionPolicy.reachedEnd(furthestPositionForTitle, duration)
+            val probe = getSharedPreferences("page_probe", Context.MODE_PRIVATE)
 
             if (current == PlaybackState.STATE_PLAYING) {
                 ++pauseGeneration
                 playbackSeenForTitle = true
+                // Audio focus changes and headset interruptions can report a real PAUSED state.
+                // Once the SAME owned item actually resumes, rearm monitoring without sending
+                // play/open commands. A different official selection has already yielded above.
+                if (PlaybackOwnershipPolicy.shouldResumeQueue(
+                        probe.getString("companion_owned_title", "").orEmpty(),
+                        probe.getString("companion_resume_title", "").orEmpty(),
+                        title(metadata),
+                        probe.getBoolean("companion_queue_suspended", false),
+                        probe.getBoolean("companion_queue_active", false),
+                        probe.getString("direct_open_target_title", "").orEmpty(),
+                    )) {
+                    probe.edit()
+                        .remove("companion_resume_title")
+                        .putBoolean("companion_queue_active", true)
+                        .putBoolean("companion_queue_suspended", false)
+                        .putLong("playback_monitor_resumed_at", System.currentTimeMillis())
+                        .putString("playback_monitor_status", "同一条内容恢复播放，连续播放已恢复")
+                        .apply()
+                    PlaybackGuardService.start(this@DedaoSessionListener)
+                    android.util.Log.i("CompanionPlayback", "queue_resumed source=$source position=$position")
+                }
             }
             if (current == PlaybackState.STATE_PLAYING && (!reachedEnd || position < 2_000L)) {
                 completionHandled = false
@@ -260,8 +282,6 @@ class DedaoSessionListener : NotificationListenerService() {
             val oldState: PlaybackState? = previousState
             previousState = state
             scheduleCompletionProbe()
-            val probe: android.content.SharedPreferences =
-                getSharedPreferences("page_probe", Context.MODE_PRIVATE)
             val pendingTitle: String = probe.getString("direct_open_target_title", "") ?: ""
             if (!pendingTitle.isBlank()) {
                 if (pendingTitle == title(metadata)) {
@@ -275,7 +295,7 @@ class DedaoSessionListener : NotificationListenerService() {
                 }
                 return
             }
-            // Only an explicit companion action resumes a suspended queue. Official play does not.
+            // Suspend during a persistent pause, but retain same-item monitoring eligibility.
             if (
                 (current == PlaybackState.STATE_PAUSED &&
                     !reachedEnd &&
@@ -285,6 +305,7 @@ class DedaoSessionListener : NotificationListenerService() {
                             oldState!!.getState() == PlaybackState.STATE_PLAYING)))))
             ) {
                 val pause = ++pauseGeneration
+                val pausedTitle = title(metadata)
                 // Official open can briefly report PAUSED while loading. Do not resume audio;
                 // only suspend ownership if it remains paused after this confirmation window.
                 handler.postDelayed(
@@ -293,15 +314,31 @@ class DedaoSessionListener : NotificationListenerService() {
                             pause != pauseGeneration ||
                                 controller.playbackState?.state != PlaybackState.STATE_PAUSED ||
                                 !probe.getBoolean("companion_queue_active", false) ||
+                                title(controller.metadata) != pausedTitle ||
                                 !probe.getString("direct_open_target_title", "").isNullOrBlank()
                         )
                             return@postDelayed
+                        // The final position/metadata may arrive after the first PAUSED callback.
+                        // Re-read completion evidence instead of applying an obsolete pause decision.
+                        val latestPosition = controller.playbackState?.position ?: 0L
+                        val latestDuration = controller.metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
+                        if (PlaybackCompletionPolicy.reachedEnd(
+                                maxOf(furthestPositionForTitle, latestPosition), latestDuration)) {
+                            observeExternalSignal("pause_confirmation_end")
+                            return@postDelayed
+                        }
                         probe
                             .edit()
                             .putBoolean("companion_queue_active", false)
                             .putBoolean("companion_queue_suspended", true)
+                            .putString("companion_resume_title", pausedTitle)
+                            .putLong("playback_monitor_paused_at", System.currentTimeMillis())
+                            .putLong("playback_monitor_pause_position", latestPosition)
+                            .putLong("playback_monitor_pause_duration", latestDuration)
+                            .putString("playback_monitor_pause_source", source)
                             .putString("playback_monitor_status", "连续播放已暂停")
                             .apply()
+                        android.util.Log.i("CompanionPlayback", "queue_suspended source=$source position=$latestPosition duration=$latestDuration")
                         ++openGeneration
                         PlaybackGuardService.stop(this@DedaoSessionListener)
                         handler.removeCallbacks(completionProbe)
@@ -313,6 +350,7 @@ class DedaoSessionListener : NotificationListenerService() {
             if (!playbackSeenForTitle || !terminalState || !reachedEnd || completionHandled) return
 
             completionHandled = true
+            ++pauseGeneration
             playbackSeenForTitle = false
             val finishedTitle: String = title(metadata)
             val queueActive: Boolean =
