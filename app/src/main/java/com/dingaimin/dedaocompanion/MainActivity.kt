@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.Dialog
 import android.app.usage.UsageStatsManager
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
@@ -689,6 +690,18 @@ class MainActivity : Activity() {
             startActivity(intent)
         } catch (error: Exception) {
             syncStatus!!.setText("没有找到得到 App")
+        }
+    }
+
+    private fun openArticleText(item: RedPacketItem) {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(item.deepLink))
+            .setPackage("com.luojilab.player")
+        try {
+            startActivity(intent)
+        } catch (error: ActivityNotFoundException) {
+            Toast.makeText(this, "无法打开原文，请确认已安装得到", Toast.LENGTH_SHORT).show()
+        } catch (error: SecurityException) {
+            Toast.makeText(this, "系统限制了跳转，请在得到中查看原文", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1627,25 +1640,16 @@ class MainActivity : Activity() {
                 )
             validity.setSingleLine(true)
             validity.setEllipsize(TextUtils.TruncateAt.END)
-            val playHint: TextView =
-                text(
-                    if (selected) "当前播放" else "点击播放",
-                    11,
-                    if (selected) ORANGE else MUTED,
-                    if (selected) Typeface.BOLD else Typeface.NORMAL,
-                )
-            playHint.setGravity(Gravity.END)
-            playHint.setPadding(dp(12), 0, 0, 0)
+            val canRead = item.hasArticleTextLink
+            val actionHint = text(
+                if (canRead) "看原文" else if (selected) "当前播放" else "点击播放",
+                11, if (canRead || selected) ORANGE else MUTED, Typeface.BOLD,
+            )
+            actionHint.setPadding(0, 0, dp(10), 0)
+            metaRow.addView(actionHint)
             metaRow.addView(
                 validity,
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-            )
-            metaRow.addView(
-                playHint,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
             )
             copy.addView(itemTitle, matchWrap())
             copy.addView(metaRow, matchWrap())
@@ -1662,7 +1666,13 @@ class MainActivity : Activity() {
             val play = mediaButton("播放 " + item.title, MediaIcon.Kind.PLAY, playItem, false)
             play.setImageDrawable(MediaIcon(MediaIcon.Kind.PLAY, if (selected) ORANGE else MUTED, dp(24)))
             row.addView(play, LinearLayout.LayoutParams(dp(48), dp(48)))
-            row.setOnClickListener(playItem)
+            if (canRead) {
+                row.setOnClickListener {
+                    if (!swipeRow.closeIfRevealed()) openArticleText(item)
+                }
+            } else {
+                row.setOnClickListener(playItem)
+            }
             val manageItem = View.OnLongClickListener {
                 swipeRow.close()
                 showItemActions(row, item)

@@ -7,6 +7,7 @@
 
 ## 当前实现
 
+- 首页点条目标题或「看原文」可在得到打开该篇专栏正文，点右侧播放键可单独听音频。缺少专栏原文链接的条目保留点击播放。
 - 普通同步通过得到自己的登录态确认权益，并读取官方返回的知识红包到期日；列表会显示
   “红包有效至 X月X日”，同步仍只回传播放与展示所需的白名单字段；
 - 无障碍服务仅作为旧版得到或特殊机型的兼容路径；
@@ -45,7 +46,9 @@
 
 ## 下载
 
-当前版本为 `0.4.1`（Kotlin 版）。本版修复播放中断后连播监控没有恢复的问题：
+当前版本为 `0.4.2`。本版增加专栏原文入口，可一边听音频，一边点开另一篇阅读。
+
+0.4.1 修复播放中断后连播监控没有恢复的问题：
 同一条内容实际恢复播放时重新启用监控；末尾的暂停状态可直接触发下一条。
 在得到里主动换课仍会让出控制，伴侣内主动暂停不会自动播放。新增暂停诊断信息，
 并包含左滑／长按忽略、撤销及红包到期日显示。
@@ -67,7 +70,7 @@ Kotlin 和 Java 都受 Android 相同的后台与电源管理约束，仅切换�
 现有实例。若当前得到版本不支持回跳，使用“红包已刷新”通知兜底；点击即可返回，
 红包结果已经保存，不必重复刷新。详见 [刷新回跳验证](docs/refresh-return-validation.md)。
 
-[下载 0.4.1 APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.4.1/knowledge-redpacket-companion-0.4.1.apk)
+[下载 0.4.2 APK](https://github.com/dingaiminGIT/knowledge-redpacket-companion/releases/download/v0.4.2/knowledge-redpacket-companion-0.4.2.apk)
 
 ## 构建与验证
 

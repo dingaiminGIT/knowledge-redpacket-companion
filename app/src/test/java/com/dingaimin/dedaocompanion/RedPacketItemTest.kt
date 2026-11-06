@@ -7,6 +7,16 @@ import org.junit.Test
 
 class RedPacketItemTest {
     @Test
+    fun readingRequiresAnOfficialArticleLinkWithAnId() {
+        fun canRead(link: String) = RedPacketItem("id", 65, "课程", "标题", link, 0L).hasArticleTextLink
+
+        assertTrue(canRead("igetapp://class/article?courseArticleId=123"))
+        assertFalse(canRead(""))
+        assertFalse(canRead("igetapp://class/article?courseArticleId="))
+        assertFalse(canRead("igetapp://base/ddplayer"))
+    }
+
+    @Test
     fun completedStateCanBeStoredOnItem() {
         val item: RedPacketItem = RedPacketItem("id", 65, "课程", "标题", "", 123L, true)
 

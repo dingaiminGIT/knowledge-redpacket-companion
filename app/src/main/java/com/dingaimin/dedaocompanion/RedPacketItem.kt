@@ -50,6 +50,9 @@ class RedPacketItem(
         return value
     }
 
+    val hasArticleTextLink: Boolean
+        get() = ARTICLE_TEXT_LINK.matches(deepLink)
+
     fun validityLabel(): String {
         val state: String = if (completed) "已学完" else "红包有效"
         if (expiresOn.isBlank()) return state
@@ -57,6 +60,8 @@ class RedPacketItem(
     }
 
     companion object {
+        private val ARTICLE_TEXT_LINK = Regex("""igetapp://class/article\?courseArticleId=[1-9][0-9]*""")
+
 
         fun from(raw: JSONObject): RedPacketItem {
             val articleCollection: Boolean = raw.optBoolean("is_article_collection", false)
